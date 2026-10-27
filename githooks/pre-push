@@ -1,0 +1,4 @@
+#!/bin/sh
+# pre-push - runs scripts/check.sh and stops the push if a check fails.
+# turn it on once per clone: git config core.hooksPath githooks
+exec "$(git rev-parse --show-toplevel)/scripts/check.sh"
