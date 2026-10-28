@@ -8,16 +8,19 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/jgorodetsky/dott/internal/picker"
-	"github.com/jgorodetsky/dott/internal/rows"
+	"github.com/jgorodetsky/dott/internal/app"
+	"github.com/jgorodetsky/dott/internal/env"
 	"github.com/jgorodetsky/dott/internal/ui"
 )
 
 // version is set at build time with -ldflags "-X main.version=<v>".
 var version = "dev"
 
-// openTTY is swapped in tests, so a test never opens the real terminal.
-var openTTY = ui.OpenTTY
+// openTTY and newEnv are swapped in tests, so a test never opens the real terminal.
+var (
+	openTTY = ui.OpenTTY
+	newEnv  = env.New
+)
 
 const usage = `dott - one fuzzy picker for your dotfiles: what is fine, what needs you, and the fixes
 
@@ -95,110 +98,47 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case o.version:
 		fmt.Fprintf(stdout, "dott %s (fzf %s)\n", version, fzfVersion())
 		return 0
-	case o.json:
-		fmt.Fprintln(stderr, "dott: --json arrives with the scan (milestone 2)")
-		return 1
-	case o.init != "":
-		fmt.Fprintln(stderr, "dott: --init arrives with the bootstrap (milestone 7)")
-		return 1
 	}
-	return pick(strings.Join(o.words, " "), stdout, stderr)
-}
-
-// pick runs the picker until the user quits. Words given on the command line
-// filter the first screen, and a single match is picked at once.
-func pick(query string, stdout, stderr io.Writer) int {
-	pk := picker.New()
-	all := rows.Demo()
-	term, closeTTY, err := openTTY()
-	if err != nil {
-		return printMatches(pk, all, query, stdout, stderr)
-	}
-	defer closeTTY()
-	select1 := query != ""
-	for {
-		res, err := pk.Pick(picker.Request{Lines: rows.Lines(all, term.Cols), Query: query, Select1: select1})
-		if err != nil {
+	e := newEnv()
+	if o.init != "" {
+		if _, err := app.Init(e, o.init, stdout); err != nil {
 			fmt.Fprintln(stderr, "dott:", err)
-			return 2
+			return 1
 		}
-		r, ok := find(all, rows.ID(res.Line))
-		if res.Code == picker.CodeInterrupt || !ok {
-			return 0
-		}
-		act(pk, term, r)
-		query, select1 = "", false // back to the whole picker
 	}
-}
-
-// act does what the row's tier allows. Until the engine exists, nothing changes.
-func act(pk picker.Backend, t *ui.Term, r rows.Row) {
-	switch r.Tier {
-	case rows.RO:
-		t.Say("● %s: %s (demo, nothing to show yet)", r.Command, r.Desc)
-	case rows.MUT:
-		t.Plan(r.Command, r.Plan)
-		switch t.Confirm() {
-		case ui.Yes:
-			t.Say("✓ %s (demo, nothing changed)", r.Command)
-		case ui.Copy:
-			if err := ui.CopyText(r.Shell); err != nil {
-				t.Say("could not copy: %v", err)
-			} else {
-				t.Say("copied: %s", r.Shell)
-			}
-		default:
-			t.Say("skipped %s", r.Command)
-		}
-	case rows.DGR:
-		t.Plan(r.Command, r.Plan)
-		if t.TypeYes() {
-			t.Say("✓ %s (demo, nothing changed)", r.Command)
-		} else {
-			t.Say("cancelled %s", r.Command)
-		}
-	case rows.PICK:
-		if len(r.Next) == 0 {
-			t.Say("▸ %s arrives in a later milestone", r.Command)
-			return
-		}
-		res, err := pk.Pick(picker.Request{Lines: rows.Lines(r.Next, t.Cols), Prompt: r.Command + " › "})
-		if err != nil {
-			t.Say("dott: %v", err)
-			return
-		}
-		if n, ok := find(r.Next, rows.ID(res.Line)); ok {
-			act(pk, t, n)
-		} // esc goes back to the main picker
-	}
-}
-
-// printMatches is the picker without a terminal: one plain line per matching row.
-func printMatches(pk picker.Backend, all []rows.Row, query string, stdout, stderr io.Writer) int {
-	got, err := pk.Filter(rows.Lines(all, 100), query)
+	a, err := app.Load(e, stdout, stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, "dott:", err)
 		return 2
 	}
-	if len(got) == 0 {
-		fmt.Fprintf(stderr, "dott: no row matches %q\n", query)
-		return 1
-	}
-	for _, line := range got {
-		if r, ok := find(all, rows.ID(line)); ok {
-			fmt.Fprintf(stdout, "%s\t%s\t%s\n", r.Tier, r.Command, r.Desc)
+	a.Yes = o.yes
+	if o.json {
+		if err := a.JSON(); err != nil {
+			fmt.Fprintln(stderr, "dott:", err)
+			return 1
 		}
+		return 0
 	}
-	return 0
-}
-
-func find(rs []rows.Row, id string) (rows.Row, bool) {
-	for _, r := range rs {
-		if r.ID == id && id != "" {
-			return r, true
+	query := strings.Join(o.words, " ")
+	term, closeTTY, err := openTTY()
+	app.Color = err == nil && os.Getenv("NO_COLOR") == ""
+	if err != nil {
+		if o.init != "" && query == "" {
+			if !o.yes {
+				fmt.Fprintln(stdout, "next: run dott in a terminal to pick what to set up, or dott fix everything --yes")
+				return 0
+			}
+			query = "fix everything"
 		}
+		if query == "" {
+			fmt.Fprintln(stderr, "dott: no terminal; give words to list matching rows (dott drift), or --json")
+			return 2
+		}
+		return a.Matches(query)
 	}
-	return rows.Row{}, false
+	defer closeTTY()
+	a.T = term
+	return a.Session(query)
 }
 
 // fzfVersion is the fzf module version built into this binary.

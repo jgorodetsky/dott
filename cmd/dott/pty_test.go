@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+
+	"github.com/jgorodetsky/dott/internal/testkit"
 )
 
 // screen runs dott in a pseudo-terminal, the way a user runs it.
@@ -42,7 +44,9 @@ func dottBin(t *testing.T) string {
 	t.Helper()
 	binOnce.Do(func() {
 		binPath = filepath.Join(os.Getenv("HOME"), "dott-under-test")
-		out, err := exec.Command("go", "build", "-o", binPath, ".").CombinedOutput()
+		build := exec.Command("go", "build", "-o", binPath, ".")
+		build.Env = append(os.Environ(), goEnv...)
+		out, err := build.CombinedOutput()
 		if err != nil {
 			binErr = fmt.Errorf("go build: %v\n%s", err, out)
 		}
@@ -53,14 +57,18 @@ func dottBin(t *testing.T) string {
 	return binPath
 }
 
-// start runs dott with args in a new pseudo-terminal.
+// start runs dott with args in a new pseudo-terminal, on a fresh fake machine whose optional
+// group is already answered.
 func start(t *testing.T, args ...string) *screen {
 	t.Helper()
-	return startCmd(t, dottBin(t), args...)
+	f := testkit.New(t)
+	f.Write(t, "home/.config/dott/config.toml", "[groups]\nextra = false\n")
+	f.Write(t, "home/.config/fx/mine/own.conf", "mine\n")
+	return startCmd(t, f.Environ(), dottBin(t), args...)
 }
 
 // startCmd runs any program in a new pseudo-terminal.
-func startCmd(t *testing.T, name string, args ...string) *screen {
+func startCmd(t *testing.T, env []string, name string, args ...string) *screen {
 	t.Helper()
 	ptmx, tty, err := pty.Open()
 	if err != nil {
@@ -70,7 +78,7 @@ func startCmd(t *testing.T, name string, args ...string) *screen {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(name, args...)
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 	if err := cmd.Start(); err != nil {
@@ -142,9 +150,11 @@ const prompt = "dott › "
 // TestPTYCtrlCRestoresTerminal runs dott from a shell, as a user does, and has that shell
 // print the terminal modes (stty -g) before and after: they must match.
 func TestPTYCtrlCRestoresTerminal(t *testing.T) {
-	s := startCmd(t, "/bin/sh", "-c", `echo "BEFORE:$(stty -g)"; "$0"; echo "EXIT:$? AFTER:$(stty -g)"`, dottBin(t))
+	f := testkit.New(t)
+	f.Write(t, "home/.config/dott/config.toml", "[groups]\nextra = false\n")
+	s := startCmd(t, f.Environ(), "/bin/sh", "-c", `echo "BEFORE:$(stty -g)"; "$0"; echo "EXIT:$? AFTER:$(stty -g)"`, dottBin(t))
 	s.waitFor(prompt, 1)
-	s.waitFor("status shell", 1)
+	s.waitFor("fix everything", 1)
 	s.send("\x03")
 	s.waitFor("AFTER:", 1)
 	text := s.text()
@@ -165,10 +175,10 @@ func TestPTYCtrlCRestoresTerminal(t *testing.T) {
 func TestPTYBackToPickerAfterAction(t *testing.T) {
 	s := start(t)
 	s.waitFor(prompt, 1)
-	s.send("status shell")
+	s.send("summary")
 	s.waitFor("read-only, runs as soon as you press enter", 1) // the preview of the row under the cursor
 	s.send("\r")
-	s.waitFor("(demo, nothing to show yet)", 1)
+	s.waitFor("need you ·", 1)
 	s.waitFor(prompt, 2) // the picker came back in the same process
 	s.send("\x1b")
 	if code := s.exit(); code != 0 {
@@ -177,13 +187,25 @@ func TestPTYBackToPickerAfterAction(t *testing.T) {
 }
 
 func TestPTYSingleMatchAsksFirst(t *testing.T) {
-	s := start(t, "fix", "aws")
+	s := start(t, "fix", "loader")
 	s.waitFor("Run it? [Y/n/copy]", 1) // picked at once, but a change still asks
-	if strings.Contains(s.text(), "nothing changed") {
+	if strings.Contains(s.text(), "✓ loader") {
 		t.Fatal("ran before the answer")
 	}
 	s.send("n\r")
-	s.waitFor("skipped fix aws", 1)
+	s.waitFor("skipped fix loader", 1)
+	s.waitFor(prompt, 1)
+	s.send("\x1b")
+	if code := s.exit(); code != 0 {
+		t.Fatalf("exit code %d, want 0; screen:\n%s", code, s.text())
+	}
+}
+
+func TestPTYFixThenBack(t *testing.T) {
+	s := start(t, "fix", "loader")
+	s.waitFor("Run it? [Y/n/copy]", 1)
+	s.send("\r")
+	s.waitFor("✓ loader: block in ~/.zshrc", 1)
 	s.waitFor(prompt, 1)
 	s.send("\x1b")
 	if code := s.exit(); code != 0 {
@@ -192,8 +214,8 @@ func TestPTYSingleMatchAsksFirst(t *testing.T) {
 }
 
 func TestPTYDangerousNeedsYes(t *testing.T) {
-	s := start(t, "resolve", "nvim")
-	s.waitFor("resolve nvim › ", 1) // the guided row opened its follow-up picker
+	s := start(t, "resolve", "mine")
+	s.waitFor("resolve mine › ", 1) // the guided row opened its follow-up picker
 	s.send("replace")
 	s.waitFor("dangerous, you type yes to run it", 1) // the cursor is on the dangerous row
 	s.send("\r")
@@ -204,5 +226,19 @@ func TestPTYDangerousNeedsYes(t *testing.T) {
 	s.send("\x1b")
 	if code := s.exit(); code != 0 {
 		t.Fatalf("exit code %d, want 0; screen:\n%s", code, s.text())
+	}
+}
+
+func TestPTYAsksGroupsOnce(t *testing.T) {
+	f := testkit.New(t)
+	s := startCmd(t, f.Environ(), dottBin(t))
+	s.waitFor("extra: the extra package [y/N]", 1)
+	s.send("n\r")
+	s.waitFor(prompt, 1)
+	s.send("\x1b")
+	s.exit()
+	b, _ := os.ReadFile(f.Path("home/.config/dott/config.toml"))
+	if !strings.Contains(string(b), "extra = false") {
+		t.Fatalf("the answer was not saved: %s", b)
 	}
 }

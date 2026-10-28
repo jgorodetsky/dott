@@ -87,3 +87,61 @@ func CopyText(s string) error {
 	cmd.Stdin = strings.NewReader(s)
 	return cmd.Run()
 }
+
+// Ask reads one line of text. ok is false when the input ended (ctrl-d) or was empty
+// and there is no default.
+func (t *Term) Ask(prompt, def string) (string, bool) {
+	if def != "" {
+		fmt.Fprintf(t.Out, "%s \033[2m[%s]\033[0m: ", prompt, def)
+	} else {
+		fmt.Fprintf(t.Out, "%s: ", prompt)
+	}
+	s, err := t.In.ReadString('\n')
+	if err != nil && s == "" {
+		return "", false
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		s = def
+	}
+	return s, s != ""
+}
+
+// YesNo asks a question; enter gives def.
+func (t *Term) YesNo(q string, def bool) bool {
+	hint := "[y/N]"
+	if def {
+		hint = "[Y/n]"
+	}
+	fmt.Fprintf(t.Out, "%s %s ", q, hint)
+	s, err := t.line()
+	switch {
+	case err != nil:
+		return false
+	case s == "":
+		return def
+	}
+	return s == "y" || s == "yes"
+}
+
+// Choose asks for one of the options by number; enter picks the first. ok is false
+// when the user typed nothing usable or q.
+func (t *Term) Choose(q string, options []string) (int, bool) {
+	fmt.Fprintf(t.Out, "\033[1m%s\033[0m\n", q)
+	for i, o := range options {
+		fmt.Fprintf(t.Out, "  %d  %s\n", i+1, o)
+	}
+	fmt.Fprintf(t.Out, "pick 1-%d (enter: 1, q: cancel): ", len(options))
+	s, err := t.line()
+	if err != nil || s == "q" {
+		return 0, false
+	}
+	if s == "" {
+		return 0, true
+	}
+	var n int
+	if _, err := fmt.Sscanf(s, "%d", &n); err != nil || n < 1 || n > len(options) {
+		return 0, false
+	}
+	return n - 1, true
+}

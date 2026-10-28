@@ -47,7 +47,7 @@ func (t Tier) Mark() string { return marks[t] }
 func (t Tier) Note() string { return notes[t] }
 
 var stateColor = map[string]string{
-	"ok": "32", "off": "2", "absent": "2", "drift": "33", "conflict": "31", "blocked": "31",
+	"ok": "32", "off": "2", "absent": "2", "drift": "33", "conflict": "31", "blocked": "31", "risky": "31",
 }
 
 // Row is one entry in the picker.
@@ -58,10 +58,7 @@ type Row struct {
 	Desc    string
 	State   string // ok, off, absent, drift, conflict, blocked, or empty
 	Section string
-	Detail  string   // first preview line; defaults to the command
-	Plan    []string // what a change does, shown before Run it?
-	Shell   string   // the same change as a shell command, for copy
-	Next    []Row    // follow-up rows of a guided row
+	Detail  string // first preview line; defaults to the command
 }
 
 // Legend is the picker header.

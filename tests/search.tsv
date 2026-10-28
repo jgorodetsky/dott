@@ -1,15 +1,27 @@
 # what you type	the row it must find	at this rank or better
-fix aws	fix-aws	1
-aws	fix-aws	2
-aws	turn-on-aws	2
-fix	fix-all	3
+# rows come from a scan of the test fixture (internal/testkit) on a fresh fake HOME
+fix	fix-all	1
+fix every	fix-all	1
+fix loader	fix:loader	1
+loader	fix:loader	2
+node	fix:pkgs/node	1
+drift	fix-all	1
+drift	fix:pkgs	2
+resolve mine	resolve:mine	1
+conflict	resolve:mine	1
+mine	resolve:mine	1
+skills	why:skills	2
 upgrade	upgrade	1
 update	refresh	1
+refresh	refresh	1
 alias	alias-add	2
-edit	edit-shell	2
-drift	fix-git-ignore	2
-conflict	resolve-nvim	1
+remove alias	alias-rm	1
+edit	edit:rc	2
+edit rc	edit:rc	1
+turn on extra	on-group:extra	1
+extra	on-group:extra	2
+turn off loader	off:loader	1
 add skill	add-skill	1
-skills	skills	2
-permissions claude	perms-claude	1
-claude	perms-claude	1
+permissions claude	perms:claude	1
+claude	perms:claude	3
+summary	summary	1

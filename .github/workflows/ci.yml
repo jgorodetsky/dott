@@ -19,3 +19,11 @@ jobs:
         with:
           go-version-file: go.mod
       - run: scripts/check.sh
+      - name: contract test against jgorodetsky/dotfiles
+        run: |
+          git clone --quiet --depth 1 https://github.com/jgorodetsky/dotfiles "$RUNNER_TEMP/dotfiles"
+          if [ -f "$RUNNER_TEMP/dotfiles/dott.toml" ]; then
+            DOTT_CONTRACT_REPO="$RUNNER_TEMP/dotfiles" go test -count=1 -run TestContract -v ./cmd/dott
+          else
+            echo "::notice::jgorodetsky/dotfiles has no dott.toml yet"
+          fi

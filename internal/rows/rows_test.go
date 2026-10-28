@@ -43,18 +43,3 @@ func TestColumnsLineUp(t *testing.T) {
 		t.Fatalf("command columns differ: %d vs %d", w(ls[0]), w(ls[1]))
 	}
 }
-
-func TestDemoIDsUnique(t *testing.T) {
-	seen := map[string]bool{}
-	var walk func([]Row)
-	walk = func(rs []Row) {
-		for _, r := range rs {
-			if r.ID == "" || seen[r.ID] {
-				t.Errorf("empty or repeated ID %q", r.ID)
-			}
-			seen[r.ID] = true
-			walk(r.Next)
-		}
-	}
-	walk(Demo())
-}
