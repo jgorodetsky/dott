@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jgorodetsky/dott/internal/ui"
 )
 
 // TestMain points HOME and the XDG folders at a temp dir, so no test can touch the real ones.
@@ -70,10 +73,15 @@ func TestRun(t *testing.T) {
 		stderrPart string
 	}{
 		{"help", []string{"--help"}, 0, usage, ""},
-		{"version", []string{"--version"}, 0, "dott dev\n", ""},
+		{"version", []string{"--version"}, 0, "dott dev (fzf 0.74.5)\n", ""},
 		{"bad flag", []string{"--nope"}, 2, "", "unknown flag --nope"},
-		{"picker not built", []string{"aws"}, 1, "", "not built yet"},
+		{"no terminal prints matches", []string{"fix", "aws"}, 0, "change\tfix aws\trun awssetup: SSO start URL, one browser login\n", ""},
+		{"no terminal, no match", []string{"zzzz"}, 1, "", `no row matches "zzzz"`},
+		{"json not built", []string{"--json"}, 1, "", "milestone 2"},
 	}
+	old := openTTY
+	t.Cleanup(func() { openTTY = old })
+	openTTY = func() (*ui.Term, func(), error) { return nil, func() {}, errors.New("no terminal in tests") }
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out, errb bytes.Buffer

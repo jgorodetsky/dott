@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check.sh - every check before a push: format, vet, tests, staticcheck, govulncheck.
+# check.sh - every check before a push: format, vet, notices, tests, staticcheck, govulncheck.
 # the pre-push hook and CI both run this file, so a push and CI never disagree.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -19,8 +19,17 @@ fi
 step "go vet"
 go vet ./...
 
+step "third-party notices"
+scripts/notices.sh --check
+
+# the ranking tests run against the built-in fzf and the fzf binary of the same pinned version
+step "fzf binary for the ranking tests"
+fzfdir="$(mktemp -d)"
+trap 'rm -r "$fzfdir"' EXIT
+go build -o "$fzfdir/fzf" github.com/junegunn/fzf
+
 step "go test"
-go test -race ./...
+DOTT_TEST_FZF="$fzfdir/fzf" go test -race ./...
 
 step staticcheck
 go run "$STATICCHECK" ./...

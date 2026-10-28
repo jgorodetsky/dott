@@ -2,7 +2,7 @@
 
 One fuzzy picker for your dotfiles: what is fine, what needs you, and the fixes.
 
-> Status: early. The command line and checks exist; the picker comes next.
+> Status: early. The picker works, on demo rows: picking one changes nothing yet. The scan of a real dotfiles repo comes next.
 
 ```
 dott              open the picker over every item

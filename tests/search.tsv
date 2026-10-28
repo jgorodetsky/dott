@@ -1,0 +1,15 @@
+# what you type	the row it must find	at this rank or better
+fix aws	fix-aws	1
+aws	fix-aws	2
+aws	turn-on-aws	2
+fix	fix-all	3
+upgrade	upgrade	1
+update	refresh	1
+alias	alias-add	2
+edit	edit-shell	2
+drift	fix-git-ignore	2
+conflict	resolve-nvim	1
+add skill	add-skill	1
+skills	skills	2
+permissions claude	perms-claude	1
+claude	perms-claude	1
