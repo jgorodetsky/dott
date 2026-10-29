@@ -181,7 +181,8 @@ func TestFixAllPlanLeavesYoursAndQuestionsAlone(t *testing.T) {
 	if strings.Contains(p.Shell, "mine") || !strings.Contains(p.Shell, "npx") {
 		t.Errorf("copy text:\n%s", p.Shell)
 	}
-	if strings.Contains(text, "jq") || strings.Contains(text, "later:") {
+	// word matches: a temp folder's random name in a path can hold "jq"
+	if regexp.MustCompile(`(?m)\bjq\b|^later:`).MatchString(text) {
 		t.Errorf("the plan touches an optional group that is off:\n%s", text)
 	}
 	// pkgs comes before skills, which needs brew:node

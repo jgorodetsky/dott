@@ -47,7 +47,8 @@ func dottBin(t *testing.T) string {
 // screen is dott in a pseudo-terminal, failing the test when a wait runs out.
 type screen struct {
 	*journey.Screen
-	t *testing.T
+	t    *testing.T
+	sent int // how much output there was when keys last went in
 }
 
 // machine is a fresh fake machine whose optional group is answered, with your own folder in
@@ -87,7 +88,7 @@ func open(t *testing.T, env []string, cols, rows int, name string, args ...strin
 		t.Skipf("no pseudo-terminal: %v", err)
 	}
 	t.Cleanup(s.Close)
-	return &screen{s, t}
+	return &screen{Screen: s, t: t}
 }
 
 // start runs dott on a fresh machine in a 120x40 terminal.
@@ -128,6 +129,7 @@ func (s *screen) enter(query string) {
 
 func (s *screen) send(keys string) {
 	s.t.Helper()
+	s.sent = len(s.Text())
 	if err := s.Send(keys); err != nil {
 		s.t.Fatal(err)
 	}
@@ -250,8 +252,7 @@ func TestPTYDangerousNeedsYes(t *testing.T) {
 	s.send("replace")
 	s.waitFor("dangerous, you type yes to run it", 1) // the cursor is on the dangerous row
 	s.send("\r")
-	s.waitFor("type yes to run it", 1)
-	s.send("y\r")
+	s.answer("anything else cancels:", "y")
 	s.waitFor("cancelled replace with the repo's", 1)
 	s.waitScreen("resolve mine › replace") // nothing changed: still in the list, with the query
 	s.send(esc)
@@ -617,10 +618,16 @@ func TestJourneyRemoteHangs(t *testing.T) {
 	}
 }
 
-// answer waits for a question, then types the answer and enter.
+// answer waits for a question that comes after the keys sent last, then types the answer
+// and enter. An earlier question with the same words, or the same words in a preview, would
+// send the answer before dott asks, and dott drops keys typed before a question.
 func (s *screen) answer(question, text string) {
 	s.t.Helper()
-	s.waitFor(question, 1)
+	for deadline := time.Now().Add(10 * time.Second); !strings.Contains(s.Text()[s.sent:], question); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			s.t.Fatalf("waited 10s for %q after the last keys; screen:\n%s", question, s.Snapshot())
+		}
+	}
 	s.send(text + "\r")
 }
 
