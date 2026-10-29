@@ -42,11 +42,7 @@ func (l Lib) Pick(req Request) (Result, error) {
 	if err != nil {
 		return Result{Code: code}, err
 	}
-	r := Result{Code: code}
-	if len(got) > 0 {
-		r.Line = got[0]
-	}
-	return r, nil
+	return result(got, code), nil
 }
 
 func (l Lib) Filter(lines []string, query string) ([]string, error) {

@@ -14,203 +14,206 @@ import (
 	"github.com/jgorodetsky/dott/internal/rows"
 )
 
-// Build turns the last scan into picker rows and what each one does.
-//
-// Order: the last pick, up to 7 rows picked often lately, fix everything, the rows that
-// need you, turn on rows, the tools (summary, refresh, upgrade, aliases, edit,
-// permissions, skills, restore), then every item that is fine.
-func (a *App) Build() ([]rows.Row, map[string]*Action) {
-	acts := map[string]*Action{}
-	var needs, on, fine []rows.Row
-	add := func(dst *[]rows.Row, r rows.Row, act *Action) {
-		*dst = append(*dst, r)
-		acts[r.ID] = act
-	}
-	groupsOff := map[string][]string{}
-	var groupOrder []string
-	nFix := 0
-	var fixNames []string
+type adder func(*[]rows.Row, rows.Row, *Action)
+
+// mainView is the first screen: what needs you, every item, then the tools.
+func (a *App) mainView() View {
+	return View{Prompt: "dott › ", Header: (*App).mainHeader, Rows: (*App).Build, Stay: true, Ghost: "type any words, like: " + a.example() + "; esc quits"}
+}
+
+// example is a query for the grey hint that finds a row of this repo: a fix that is waiting,
+// else the first item.
+func (a *App) example() string {
 	for _, s := range a.All {
-		s := s
-		it := a.item(s.ID)
-		show := &Action{Show: func(a *App) error { a.showItem(s); return nil }}
-		base := rows.Row{Desc: s.Desc, State: string(s.State), Section: s.Section, Detail: s.Detail}
-		switch s.State {
-		case engine.OK, engine.Absent:
-			r := base
-			r.ID, r.Tier, r.Command = "show:"+s.ID, rows.RO, s.ID
-			add(&fine, r, show)
-			if s.State == engine.OK {
-				a.partRows(s, &needs, add)
-			}
-			continue
-		case engine.Off:
-			if a.Cfg.IsOff(s.ID) || it == nil || it.Group == "" {
-				r := base
-				r.ID, r.Tier, r.Command = "on:"+s.ID, rows.MUT, "turn on "+s.ID
-				id := s.ID
-				add(&on, r, &Action{Changes: func(a *App) (*Plan, error) { return a.offPlan(id, false), nil }})
-				continue
-			}
-			if _, seen := groupsOff[it.Group]; !seen {
-				groupOrder = append(groupOrder, it.Group)
-			}
-			groupsOff[it.Group] = append(groupsOff[it.Group], s.ID)
-			continue
-		case engine.Blocked:
-			r := base
-			r.ID, r.Tier, r.Command = "why:"+s.ID, rows.RO, "fix "+s.ID
-			r.Detail = "blocked: " + s.Detail
-			add(&needs, r, show)
-			continue
+		if s.State == engine.Drift {
+			return "fix " + s.ID
 		}
-		if len(s.Parts) == 0 {
-			id := s.ID
-			if s.State == engine.Conflict {
-				r := base
-				r.ID, r.Tier, r.Command = "resolve:"+id, rows.PICK, "resolve "+id
-				add(&needs, r, &Action{Next: func(a *App) ([]rows.Row, map[string]*Action) { return a.resolveRows(id, "") }})
-				continue
-			}
-			r := base
-			r.ID, r.Tier, r.Command = "fix:"+id, rows.MUT, "fix "+id
-			add(&needs, r, &Action{Changes: func(a *App) (*Plan, error) { return a.fixPlan(id, "", false) }})
-			off := rows.Row{ID: "off:" + id, Tier: rows.MUT, Command: "turn off " + id, Desc: "stop checking it on this Mac", State: string(s.State), Section: s.Section}
-			add(&needs, off, &Action{Changes: func(a *App) (*Plan, error) { return a.offPlan(id, true), nil }})
-			if !s.Interactive {
-				nFix++
-				fixNames = append(fixNames, id)
-			}
-			continue
-		}
-		if hasDrift(s) {
-			id := s.ID
-			r := base
-			r.ID, r.Tier, r.Command = "fix:"+id, rows.MUT, "fix "+id
-			add(&needs, r, &Action{Changes: func(a *App) (*Plan, error) { return a.fixPlan(id, "", false) }})
-			nFix++
-			fixNames = append(fixNames, id)
-		} else {
-			r := base
-			r.ID, r.Tier, r.Command = "show:"+s.ID, rows.RO, s.ID
-			add(&needs, r, show)
-		}
-		a.partRows(s, &needs, add)
 	}
-	for _, g := range groupOrder {
-		g := g
-		r := rows.Row{ID: "on-group:" + g, Tier: rows.MUT, Command: "turn on " + g, Desc: a.M.Groups[g], State: "off",
-			Detail: "optional: " + strings.Join(groupsOff[g], ", ")}
-		add(&on, r, &Action{Changes: func(a *App) (*Plan, error) { return a.groupPlan(g, true), nil }})
+	if len(a.All) > 0 {
+		return a.All[0].ID
 	}
-	for _, g := range a.groupsWithParts() {
-		if _, done := groupsOff[g]; done || a.Cfg.Groups[g] {
-			continue
-		}
-		g := g
-		r := rows.Row{ID: "on-group:" + g, Tier: rows.MUT, Command: "turn on " + g, Desc: a.M.Groups[g], State: "off", Detail: "optional packages"}
-		add(&on, r, &Action{Changes: func(a *App) (*Plan, error) { return a.groupPlan(g, true), nil }})
-	}
-
-	var top, tools []rows.Row
-	if nFix > 0 {
-		add(&top, rows.Row{ID: "fix-all", Tier: rows.MUT, Command: "fix everything",
-			Desc: plural(nFix, "item drifted", "items drifted") + "; your own things and questions are left to you", Detail: list(fixNames, 6)},
-			&Action{Changes: func(a *App) (*Plan, error) { return a.fixAllPlan() }})
-	}
-	a.toolRows(&tools, add)
-
-	all := append(append(append(append(top, needs...), on...), tools...), fine...)
-	return a.float(all), acts
+	return "fix everything"
 }
 
-// partRows adds a row for each part that needs you.
-func (a *App) partRows(s engine.Status, dst *[]rows.Row, add func(*[]rows.Row, rows.Row, *Action)) {
-	for _, p := range s.Parts {
-		p := p
-		name := p.ID[len(s.ID)+1:]
-		id := s.ID
-		desc := p.Desc
-		if desc == "" {
-			desc = s.Desc
-		}
-		r := rows.Row{Desc: desc, State: string(p.State), Section: s.Section, Detail: p.Detail}
-		switch p.State {
-		case engine.Drift:
-			r.ID, r.Tier, r.Command = "fix:"+p.ID, rows.MUT, "fix "+p.ID
-			add(dst, r, &Action{Changes: func(a *App) (*Plan, error) { return a.fixPlan(id, name, false) }})
-		case engine.Conflict:
-			r.ID, r.Tier, r.Command = "resolve:"+p.ID, rows.PICK, "resolve "+p.ID
-			add(dst, r, &Action{Next: func(a *App) ([]rows.Row, map[string]*Action) { return a.resolveRows(id, name) }})
-		case engine.Blocked:
-			r.ID, r.Tier, r.Command = "why:"+p.ID, rows.RO, "fix "+p.ID
-			r.Detail = "blocked: " + p.Detail
-			add(dst, r, &Action{Show: func(a *App) error {
-				a.say("%s %s: %s\n  %s", red("✗"), p.ID, p.Detail, dim("next: "+p.Fix))
-				return nil
-			}})
-		case engine.Off:
-			if a.Cfg.IsOff(p.ID) {
-				r.ID, r.Tier, r.Command = "on:"+p.ID, rows.MUT, "turn on "+p.ID
-				pid := p.ID
-				add(dst, r, &Action{Changes: func(a *App) (*Plan, error) { return a.offPlan(pid, false), nil }})
-			}
-		}
-	}
-}
-
-func (a *App) groupsWithParts() []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, it := range a.M.Items {
-		for _, g := range it.PackageGroups {
-			if !seen[g] {
-				seen[g] = true
-				out = append(out, g)
-			}
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-// toolRows are the rows that are always there.
-func (a *App) toolRows(dst *[]rows.Row, add func(*[]rows.Row, rows.Row, *Action)) {
+// mainHeader is the status line: the repo, its branch and how many items are in each state.
+func (a *App) mainHeader() string {
 	counts := map[engine.State]int{}
 	for _, s := range a.All {
 		counts[s.State]++
 	}
+	head := a.Env.Short(a.M.Dir)
+	if a.branch != "" {
+		head += " (" + a.branch + ")"
+	}
 	need := counts[engine.Drift] + counts[engine.Conflict] + counts[engine.Blocked]
-	add(dst, rows.Row{ID: "summary", Tier: rows.RO, Command: "summary",
-		Desc: fmt.Sprintf("%d ok · %d need you · %d off · %d not here", counts[engine.OK], need, counts[engine.Off], counts[engine.Absent])},
-		&Action{Show: func(a *App) error { a.summary(); return nil }})
-	add(dst, rows.Row{ID: "refresh", Tier: rows.PICK, Command: "refresh", Desc: "update: pull the repo, see what changed, then fix"},
+	needs := plural(need, "needs you", "need you")
+	if need > 0 {
+		needs = amber(needs)
+	}
+	line := fmt.Sprintf("%s %s %s ok · %s · %d off · %d not here", bold("dott"), dim("· "+head+" ·"),
+		green(fmt.Sprint(counts[engine.OK])), needs, counts[engine.Off], counts[engine.Absent])
+	if n := a.notice(0); n != "" {
+		line += "\n" + amber("↑ "+n)
+	}
+	return line
+}
+
+// Build turns the last scan into the main screen's rows and what each one does.
+//
+// Order: the last pick, up to 7 rows picked often lately, fix everything, the rows that
+// need you, every item (each opens its view), then the tools.
+func (a *App) Build() ([]rows.Row, map[string]*Action) {
+	acts := map[string]*Action{}
+	var needs, items []rows.Row
+	add := func(dst *[]rows.Row, r rows.Row, act *Action) {
+		*dst = append(*dst, r)
+		acts[r.ID] = act
+	}
+	var fixNames []string
+	for _, s := range a.All {
+		if a.needRows(s, &needs, add) {
+			fixNames = append(fixNames, s.ID)
+		}
+		add(&items, a.itemRow(s), a.openItem(s.ID))
+	}
+	var top, tools []rows.Row
+	if n := len(fixNames); n > 0 {
+		add(&top, rows.Row{ID: "fix-all", Tier: rows.MUT, Command: "fix everything",
+			Desc: plural(n, "item", "items") + " in drift · your own things and questions are left to you", Detail: list(fixNames, 6)},
+			&Action{Changes: func(a *App) (*Plan, error) { return a.fixAllPlan() }})
+	}
+	a.toolRows(&tools, add)
+	all := append(append(append(top, needs...), items...), tools...)
+	return a.float(all), acts
+}
+
+func (a *App) itemRow(s engine.Status) rows.Row {
+	r := rows.Row{ID: "item:" + s.ID, Tier: rows.ITEM, Command: s.ID, Desc: s.Desc, State: string(s.State), Section: s.Section, Detail: s.Detail}
+	if it := a.item(s.ID); it != nil && it.Origin == "local" {
+		r.Desc += " · this Mac only"
+	}
+	return r
+}
+
+func (a *App) openItem(id string) *Action {
+	return &Action{Open: func(a *App) View { return a.itemView(id) }}
+}
+
+// needRows adds the rows for what needs you in one item: a fix, a resolve or why it is
+// blocked, for the item and for each of its parts. It says whether fix everything takes it.
+func (a *App) needRows(s engine.Status, dst *[]rows.Row, add adder) bool {
+	id := s.ID
+	base := rows.Row{Desc: s.Desc, State: string(s.State), Section: s.Section, Detail: s.Detail}
+	switch s.State {
+	case engine.OK, engine.Absent, engine.Off:
+		return false
+	case engine.Blocked:
+		r := base
+		r.ID, r.Tier, r.Command, r.Detail = "why:"+id, rows.RO, "fix "+id, "blocked: "+s.Detail
+		add(dst, r, &Action{Show: func(a *App) error { a.why(id, s.Detail, s.Fix); return nil }})
+		return false
+	}
+	if len(s.Parts) == 0 {
+		r := base
+		if s.State == engine.Conflict {
+			r.ID, r.Tier, r.Command = "resolve:"+id, rows.PICK, "resolve "+id
+			add(dst, r, &Action{Next: func(a *App) ([]rows.Row, map[string]*Action) { return a.resolveRows(id, "") }})
+			return false
+		}
+		r.ID, r.Tier, r.Command = "fix:"+id, rows.MUT, "fix "+id
+		add(dst, r, &Action{Changes: func(a *App) (*Plan, error) { return a.fixPlan(id, "", false) }})
+		return !s.Interactive
+	}
+	fix := hasDrift(s)
+	if fix {
+		r := base
+		r.ID, r.Tier, r.Command = "fix:"+id, rows.MUT, "fix "+id
+		add(dst, r, &Action{Changes: func(a *App) (*Plan, error) { return a.fixPlan(id, "", false) }})
+	}
+	for _, p := range s.Parts {
+		if r, act, ok := a.partNeed(s, p); ok {
+			add(dst, r, act)
+		}
+	}
+	return fix
+}
+
+// partNeed is the row for a part that needs you: a fix, a resolve or why it is blocked.
+func (a *App) partNeed(s, p engine.Status) (rows.Row, *Action, bool) {
+	name := p.ID[len(s.ID)+1:]
+	id := s.ID
+	desc := p.Desc
+	if desc == "" {
+		desc = s.Desc
+	}
+	r := rows.Row{Desc: desc, State: string(p.State), Section: s.Section, Detail: p.Detail}
+	switch p.State {
+	case engine.Drift:
+		r.ID, r.Tier, r.Command = "fix:"+p.ID, rows.MUT, "fix "+p.ID
+		return r, &Action{Changes: func(a *App) (*Plan, error) { return a.fixPlan(id, name, false) }}, true
+	case engine.Conflict:
+		r.ID, r.Tier, r.Command = "resolve:"+p.ID, rows.PICK, "resolve "+p.ID
+		return r, &Action{Next: func(a *App) ([]rows.Row, map[string]*Action) { return a.resolveRows(id, name) }}, true
+	case engine.Blocked:
+		r.ID, r.Tier, r.Command, r.Detail = "why:"+p.ID, rows.RO, "fix "+p.ID, "blocked: "+p.Detail
+		return r, &Action{Show: func(a *App) error { a.why(p.ID, p.Detail, p.Fix); return nil }}, true
+	}
+	return r, nil, false
+}
+
+// why says what a blocked item or part is waiting for.
+func (a *App) why(id, detail, fix string) {
+	a.say("%s %s: %s", red("✗"), id, detail)
+	if fix != "" {
+		a.say("  %s", dim("next: "+fix))
+	}
+}
+
+// toolRows are the rows that are always there. Lists of more than one thing fold into a
+// row that opens them, so the items stay on the first screen.
+func (a *App) toolRows(dst *[]rows.Row, add adder) {
+	if gs := sortedKeys(a.M.Groups); len(gs) > 0 {
+		off := 0
+		for _, g := range gs {
+			if !a.Cfg.Groups[g] {
+				off++
+			}
+		}
+		add(dst, rows.Row{ID: "parts", Tier: rows.PICK, Command: "optional parts", Desc: "turn on or off: " + strings.Join(gs, ", "),
+			Detail: fmt.Sprintf("%d on · %d off on this Mac", len(gs)-off, off)},
+			&Action{Open: func(a *App) View { return View{Rows: (*App).groupRows, Stay: true, Forward: true} }})
+	}
+	add(dst, rows.Row{ID: "refresh", Tier: rows.PICK, Command: "refresh", Desc: "update: fetch, see what changed, then pull and fix after a yes each"},
 		&Action{Guide: func(a *App) error { return a.refresh() }})
 	add(dst, rows.Row{ID: "upgrade", Tier: rows.PICK, Command: "upgrade", Desc: "newer versions of what brew installed; you pick which"},
 		&Action{Next: func(a *App) ([]rows.Row, map[string]*Action) { return a.upgradeRows() }})
+	if adds, _ := a.addRows(); len(adds) > 0 {
+		names := map[string]string{"file": "a file", "brew": "a brew package", "alias": "an alias", "skill": "a skill"}
+		var what []string
+		for _, r := range adds {
+			what = append(what, names[strings.Fields(r.Command)[1]])
+		}
+		if len(what) > 1 {
+			what = append(what[:len(what)-2], what[len(what)-2]+" or "+what[len(what)-1])
+		}
+		add(dst, rows.Row{ID: "add", Tier: rows.PICK, Command: "add", Desc: "add " + strings.Join(what, ", ") + ": on every machine or this Mac only"},
+			&Action{Open: func(a *App) View { return View{Rows: (*App).addRows, Forward: true} }})
+	}
 	if a.M.Aliases != nil {
-		add(dst, rows.Row{ID: "alias-add", Tier: rows.PICK, Command: "add alias <name> <command>", Desc: "on every machine (the repo) or this Mac only"},
-			&Action{Guide: func(a *App) error { return a.addAlias() }})
 		add(dst, rows.Row{ID: "alias-rm", Tier: rows.PICK, Command: "remove alias <name>", Desc: "asks where: the repo, this Mac, or both"},
 			&Action{Guide: func(a *App) error { return a.removeAlias() }})
 	}
-	for _, e := range a.M.Edits {
-		e := e
-		p := a.C.Path(e.File)
-		add(dst, rows.Row{ID: "edit:" + e.Name, Tier: rows.RO, Command: "edit " + e.Name, Desc: e.Desc, Detail: a.Env.Short(p)},
-			&Action{Show: func(a *App) error { return a.edit(p) }})
-	}
-	for _, tool := range perms.Tools {
-		if !a.toolHere(tool) {
-			continue
+	if len(a.M.Edits) > 0 {
+		var names []string
+		for _, e := range a.M.Edits {
+			names = append(names, e.Name)
 		}
-		tool := tool
-		add(dst, rows.Row{ID: "perms:" + tool, Tier: rows.RO, Command: "permissions " + tool, Desc: "what " + tool + " may do without asking (read-only)"},
-			&Action{Show: func(a *App) error { a.showPerms(tool); return nil }})
+		add(dst, rows.Row{ID: "edits", Tier: rows.PICK, Command: "edit a file", Desc: strings.Join(names, ", "), Detail: plural(len(names), "file", "files") + " you edit often"},
+			&Action{Open: func(a *App) View { return View{Rows: (*App).editRows, Stay: true, Forward: true} }})
 	}
-	if a.skillsItem() != nil {
-		add(dst, rows.Row{ID: "add-skill", Tier: rows.PICK, Command: "add skill", Desc: "from npx skills, a GitHub URL, a folder here, or a new one"},
-			&Action{Guide: func(a *App) error { return a.addSkill() }})
+	if tools := a.permTools(); len(tools) > 0 {
+		add(dst, rows.Row{ID: "perms", Tier: rows.PICK, Command: "permissions", Desc: strings.Join(tools, ", ") + ": what each may do without asking (read-only)"},
+			&Action{Open: func(a *App) View { return View{Rows: (*App).permRows, Stay: true, Forward: true} }})
 	}
 	if bs := fsops.Backups(a.C.St.Backups()); len(bs) > 0 {
 		add(dst, rows.Row{ID: "restore", Tier: rows.PICK, Command: "restore a backup", Desc: plural(len(bs), "backup", "backups") + ", newest " + filepath.Base(bs[0])},
@@ -226,6 +229,72 @@ func (a *App) toolRows(dst *[]rows.Row, add func(*[]rows.Row, rows.Row, *Action)
 					Run: func(a *App) error { return engine.TTY(a.M.Dir, cr.Run) }}, nil
 			}})
 	}
+}
+
+// groupRows turn each optional group on or off.
+func (a *App) groupRows() ([]rows.Row, map[string]*Action) {
+	acts := map[string]*Action{}
+	var rs []rows.Row
+	for _, g := range sortedKeys(a.M.Groups) {
+		g := g
+		on := a.Cfg.Groups[g]
+		r := rows.Row{ID: "group:" + g, Tier: rows.MUT, Command: "turn on " + g, Desc: a.M.Groups[g], State: "off", Detail: a.groupDetail(g)}
+		if on {
+			r.Command, r.State = "turn off "+g, "on"
+		}
+		rs = append(rs, r)
+		acts[r.ID] = &Action{Changes: func(a *App) (*Plan, error) { return a.groupPlan(g, !on), nil }}
+	}
+	return rs, acts
+}
+
+// groupDetail names what a group holds.
+func (a *App) groupDetail(g string) string {
+	var in []string
+	for _, it := range a.M.Items {
+		if it.Group == g {
+			in = append(in, it.ID)
+		}
+		for pkg, pg := range it.PackageGroups {
+			if pg == g {
+				in = append(in, it.ID+"/"+pkg)
+			}
+		}
+	}
+	sort.Strings(in)
+	return "holds " + list(in, 6)
+}
+
+func (a *App) editRows() ([]rows.Row, map[string]*Action) {
+	acts := map[string]*Action{}
+	var rs []rows.Row
+	for _, e := range a.M.Edits {
+		p := a.C.Path(e.File)
+		rs = append(rs, rows.Row{ID: "edit:" + e.Name, Tier: rows.RO, Command: "edit " + e.Name, Desc: e.Desc, Detail: a.Env.Short(p)})
+		acts["edit:"+e.Name] = &Action{Show: func(a *App) error { return a.edit(p) }}
+	}
+	return rs, acts
+}
+
+func (a *App) permTools() []string {
+	var out []string
+	for _, tool := range perms.Tools {
+		if a.toolHere(tool) {
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
+func (a *App) permRows() ([]rows.Row, map[string]*Action) {
+	acts := map[string]*Action{}
+	var rs []rows.Row
+	for _, tool := range a.permTools() {
+		tool := tool
+		rs = append(rs, rows.Row{ID: "perms:" + tool, Tier: rows.RO, Command: "permissions " + tool, Desc: "what " + tool + " may do without asking (read-only)"})
+		acts["perms:"+tool] = &Action{Show: func(a *App) error { a.showPerms(tool); return nil }}
+	}
+	return rs, acts
 }
 
 func (a *App) toolHere(tool string) bool {

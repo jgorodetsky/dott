@@ -3,6 +3,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/jgorodetsky/dott/internal/config"
 	"github.com/jgorodetsky/dott/internal/engine"
 	"github.com/jgorodetsky/dott/internal/env"
+	"github.com/jgorodetsky/dott/internal/gitx"
 	"github.com/jgorodetsky/dott/internal/kinds"
 	"github.com/jgorodetsky/dott/internal/manifest"
 	"github.com/jgorodetsky/dott/internal/picker"
@@ -36,8 +38,65 @@ type App struct {
 	Err io.Writer
 	Yes bool // --yes: answer yes to change prompts (never to dangerous ones)
 
-	All  []engine.Status
-	acts map[string]*Action
+	All    []engine.Status
+	acts   map[string]*Action
+	branch string // the repo's branch, for the header
+	failed bool   // the picker failed; the session exits 2
+	news   news   // the remote's answer: does it have commits this repo doesn't
+}
+
+// news is the update check, which runs while dott scans. Until it answers, the header has
+// no notice; the first screen after it answers shows one.
+type news struct {
+	ch   chan string
+	text string
+}
+
+// checkRemote asks the remote, in the background, whether it has new commits. It gives up
+// after 5s, and the returned stop ends it (and the git it runs) when dott quits sooner.
+func (a *App) checkRemote() (stop func()) {
+	if !a.Env.Has("git") {
+		return func() {}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	a.news.ch = make(chan string, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		up, err := (gitx.Repo{Dir: a.M.Dir}).RemoteNews(ctx)
+		if err != nil || up == "" {
+			a.news.ch <- ""
+			return
+		}
+		a.news.ch <- up + " has new commits: pick refresh"
+	}()
+	return func() {
+		cancel()
+		select { // wait for git to be killed, so nothing outlives dott
+		case <-done:
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// notice is the update line for the header, once the check has answered.
+func (a *App) notice(wait time.Duration) string {
+	if a.news.ch == nil {
+		return a.news.text
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case a.news.text = <-a.news.ch:
+		a.news.ch = nil
+	default:
+		select {
+		case a.news.text = <-a.news.ch:
+			a.news.ch = nil
+		case <-timer.C:
+		}
+	}
+	return a.news.text
 }
 
 // ErrNoRepo means this Mac has no dotfiles repo set up yet.
@@ -78,7 +137,7 @@ func Load(e *env.Env, out, errw io.Writer) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	m, err := manifest.Load(dir)
+	m, err := loadManifest(e, cfg, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -87,10 +146,45 @@ func Load(e *env.Env, out, errw io.Writer) (*App, error) {
 	return a, nil
 }
 
+// loadManifest reads the repo's dott.toml and this Mac's own local.toml next to the settings.
+func loadManifest(e *env.Env, cfg *config.Config, dir string) (*manifest.Manifest, error) {
+	m, err := manifest.Load(dir)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.MergeLocal(filepath.Join(filepath.Dir(ConfigPath(e)), manifest.LocalName), LocalDir(e, cfg)); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// LocalDir is where the files you track for this Mac only live: [local] dir, else
+// ~/.config/dott/files.
+func LocalDir(e *env.Env, cfg *config.Config) string {
+	if cfg.Local.Dir != "" {
+		return e.Expand(cfg.Local.Dir)
+	}
+	return filepath.Join(filepath.Dir(ConfigPath(e)), "files")
+}
+
+// reload reads the manifests again after dott changed one (a pull, an added file) and scans.
+func (a *App) reload() error {
+	m, err := loadManifest(a.Env, a.Cfg, a.M.Dir)
+	if err != nil {
+		return err
+	}
+	a.M, a.C.M = m, m
+	a.Scan()
+	return nil
+}
+
 // Scan checks every item again.
 func (a *App) Scan() {
 	a.C.Forget()
 	a.All = engine.Scan(a.C)
+	if a.Env.Has("git") {
+		a.branch = (gitx.Repo{Dir: a.M.Dir}).Branch()
+	}
 }
 
 // SaveConfig writes this Mac's settings.
@@ -124,7 +218,7 @@ func (a *App) AskGroups() {
 	sort.Strings(names)
 	a.T.Say("\033[1mOptional parts\033[0m \033[2m(asked once; change it later with turn on / turn off)\033[0m")
 	for _, g := range names {
-		a.Cfg.Groups[g] = a.T.YesNo(fmt.Sprintf("  %s: %s", g, a.M.Groups[g]), false)
+		a.Cfg.Groups[g] = a.T.YesNo(fmt.Sprintf("  %s: %s %s", g, a.M.Groups[g], dim("("+a.groupDetail(g)+")")), false)
 	}
 	if err := a.SaveConfig(); err != nil {
 		a.T.Say("could not save %s: %v", a.Env.Short(a.C.CfgAt), err)
@@ -132,29 +226,21 @@ func (a *App) AskGroups() {
 }
 
 // Session runs the picker until the user quits. Words filter the first screen, and a single
-// match is picked at once (its tier still asks).
+// match is picked at once (its tier still asks). Esc goes back a screen; on the first
+// screen, and with ctrl-c anywhere, it quits.
 func (a *App) Session(query string) int {
+	defer a.checkRemote()()
 	a.AskGroups()
+	// a slow brew can take seconds: say what the wait is, then clear the line for the picker
+	fmt.Fprintf(a.T.Out, "%s", dim(fmt.Sprintf("checking %s…", plural(len(a.M.Items), "item", "items"))))
 	a.Scan()
-	select1 := query != ""
-	for {
-		rs, acts := a.Build()
-		a.acts = acts
-		res, err := a.Pk.Pick(picker.Request{Lines: rows.Lines(rs, a.T.Cols), Query: query, Select1: select1, History: a.history()})
-		if err != nil {
-			fmt.Fprintln(a.Err, "dott:", err)
-			return 2
-		}
-		id := rows.ID(res.Line)
-		r, ok := findRow(rs, id)
-		if res.Code == picker.CodeInterrupt || !ok {
-			return 0
-		}
-		_ = a.C.St.Pick(id, time.Now())
-		a.Act(r, acts[id])
-		a.Scan()
-		query, select1 = "", false
+	fmt.Fprint(a.T.Out, "\r\033[K")
+	a.notice(1500 * time.Millisecond)
+	a.browse(a.mainView(), query, query != "")
+	if a.failed {
+		return 2
 	}
+	return 0
 }
 
 func (a *App) history() string {

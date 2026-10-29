@@ -79,26 +79,44 @@ func ids(lines []string) []string {
 }
 
 // TestSearchRanking runs every case through fzf's filter mode, the same matching as the picker.
+// A case first>second also opens the view behind first, which takes the query, and finds
+// second there: that is what dott edit rc does.
 func TestSearchRanking(t *testing.T) {
 	_, a := fixtureApp(t)
-	rs, _ := a.Build()
+	rs, acts := a.Build()
 	lines := rows.Lines(rs, 100)
+	rankOf := func(b picker.Backend, lines []string, query, want string) (int, []string) {
+		got, err := b.Filter(lines, query)
+		if err != nil {
+			t.Fatalf("%q: %v", query, err)
+		}
+		for i, l := range got {
+			if rows.ID(l) == want {
+				return i + 1, got
+			}
+		}
+		return 0, got
+	}
 	for name, b := range backends(t) {
 		t.Run(name, func(t *testing.T) {
 			for _, c := range loadCases(t) {
-				got, err := b.Filter(lines, c.query)
-				if err != nil {
-					t.Fatalf("search.tsv:%d %q: %v", c.line, c.query, err)
+				first, second, deep := strings.Cut(c.want, ">")
+				if rank, got := rankOf(b, lines, c.query, first); rank == 0 || rank > c.rank {
+					t.Errorf("search.tsv:%d %q: %s at rank %d, want %d or better; got %v", c.line, c.query, first, rank, c.rank, ids(got))
+					continue
 				}
-				rank := 0
-				for i, l := range got {
-					if rows.ID(l) == c.want {
-						rank = i + 1
-						break
-					}
+				if !deep {
+					continue
 				}
-				if rank == 0 || rank > c.rank {
-					t.Errorf("search.tsv:%d %q: %s at rank %d, want %d or better; got %v", c.line, c.query, c.want, rank, c.rank, ids(got))
+				act := acts[first]
+				if act == nil || act.Open == nil || !act.Open(a).Forward {
+					t.Errorf("search.tsv:%d: %s doesn't open a view that takes the query", c.line, first)
+					continue
+				}
+				vrs, _ := act.Open(a).Rows(a)
+				r, _ := findRow(rs, first)
+				if rank, got := rankOf(b, rows.Lines(vrs, 100), forwardQuery(r.Command, c.query), second); rank != 1 {
+					t.Errorf("search.tsv:%d %q: in %s, %s at rank %d, want 1; got %v", c.line, c.query, first, second, rank, ids(got))
 				}
 			}
 		})
@@ -148,11 +166,20 @@ func TestFixAllPlanLeavesYoursAndQuestionsAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := strings.Join(p.Lines, "\n")
-	for _, want := range []string{"pkgs: brew install node", "loader: add a marked block", "skills: then, once what it needs is in place",
-		"left alone: mine is yours", "left alone: ask asks its own questions"} {
+	for _, want := range []string{"pkgs: brew install --formula node", "loader: add a marked block", "skills: after pkgs/node: "} {
 		if !strings.Contains(text, want) {
 			t.Errorf("plan lacks %q:\n%s", want, text)
 		}
+	}
+	// what it leaves alone is not a step, so it has its own list and mark, and no copy text
+	left := strings.Join(p.Left, "\n")
+	for _, want := range []string{"mine is yours", "ask asks its own questions"} {
+		if !strings.Contains(left, want) || strings.Contains(text, want) {
+			t.Errorf("%q is not only in Left:\nlines:\n%s\nleft:\n%s", want, text, left)
+		}
+	}
+	if strings.Contains(p.Shell, "mine") || !strings.Contains(p.Shell, "npx") {
+		t.Errorf("copy text:\n%s", p.Shell)
 	}
 	if strings.Contains(text, "jq") || strings.Contains(text, "later:") {
 		t.Errorf("the plan touches an optional group that is off:\n%s", text)
@@ -163,13 +190,30 @@ func TestFixAllPlanLeavesYoursAndQuestionsAlone(t *testing.T) {
 	}
 }
 
+// TestBlockedHintNamesARow: the next: hint of an item that waits for a brew package names the
+// package's own row, which is under the brew item's id.
+func TestBlockedHintNamesARow(t *testing.T) {
+	_, a := fixtureApp(t)
+	s, _ := a.status("skills")
+	if s.Fix != "fix pkgs/node first" {
+		t.Fatalf("hint %q", s.Fix)
+	}
+	rs, _ := a.Build()
+	for _, r := range rs {
+		if r.Command == "fix pkgs/node" {
+			return
+		}
+	}
+	t.Fatal("no fix pkgs/node row for the hint")
+}
+
 func TestFloatPutsPicksFirst(t *testing.T) {
 	_, a := fixtureApp(t)
-	a.C.St.Pick("summary", timeNow())
+	a.C.St.Pick("refresh", timeNow())
 	a.C.St.Pick("upgrade", timeNow())
-	a.C.St.Pick("summary", timeNow())
+	a.C.St.Pick("refresh", timeNow())
 	rs, _ := a.Build()
-	if rs[0].ID != "summary" || rs[1].ID != "upgrade" {
+	if rs[0].ID != "refresh" || rs[1].ID != "upgrade" {
 		t.Fatalf("top rows %s %s", rs[0].ID, rs[1].ID)
 	}
 }

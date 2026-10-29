@@ -192,7 +192,7 @@ func (Brew) Plan(c *engine.Ctx, it *manifest.Item, s engine.Status, name string,
 	if len(formulae) > 0 {
 		argv := append([]string{b, "install", "--formula"}, formulae...)
 		out = append(out, engine.Change{
-			Summary: "brew install " + strings.Join(formulae, " "),
+			Summary: "brew install --formula " + strings.Join(formulae, " "),
 			Shell:   engine.Quote(argv...),
 			Do:      func(x *engine.Exec) error { return x.Stream(argv) },
 		})
@@ -200,7 +200,7 @@ func (Brew) Plan(c *engine.Ctx, it *manifest.Item, s engine.Status, name string,
 	if len(casks) > 0 {
 		argv := append([]string{b, "install", "--cask", "--adopt"}, casks...)
 		out = append(out, engine.Change{
-			Summary: "brew install --cask " + strings.Join(casks, " ") + " (adopts an app you already have)",
+			Summary: "brew install --cask --adopt " + strings.Join(casks, " ") + " (--adopt: an app you already have is taken over, not copied again)",
 			Shell:   engine.Quote(argv...),
 			Do:      func(x *engine.Exec) error { return x.Stream(argv) },
 		})

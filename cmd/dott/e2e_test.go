@@ -69,7 +69,7 @@ func TestLookIsReadOnly(t *testing.T) {
 	f.Write(t, "home/.claude/skills/synced/x/SKILL.md", "not dott's\n")
 	before := testkit.HashTree(t, f.Home)
 	states(t, f)
-	for _, words := range [][]string{{"drift"}, {"fix", "loader"}, {"summary"}} {
+	for _, words := range [][]string{{"drift"}, {"fix", "loader"}, {"skills"}} {
 		dott(t, f, words...)
 	}
 	if after := testkit.HashTree(t, f.Home); after != before {

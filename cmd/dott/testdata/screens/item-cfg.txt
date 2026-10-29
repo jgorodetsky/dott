@@ -1,0 +1,32 @@
+cfg › esc goes back                                                                                                 4/4
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  cfg · ok · ~/.config/fx/cfg → cfg
+  a config folder · link
+  ✓ ok ~ drift ! conflict ✗ blocked · off │ ● runs ◆ asks ▲ type yes ▸ opens
+▌ ▸  ~/.config/fx/cfg    this Mac   the link on this Mac
+▌ ▸  ~/dotfiles/cfg      repo       what it links to, in the repo
+▌ ●  manifest entry                 dott.toml:65
+▌ ◆  turn off cfg                   stop checking it on this Mac
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.config/fx/cfg → ~/dotfiles/cfg                                                                                   1/2
+opens a list, or asks a few questions first; esc comes back

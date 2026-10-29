@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -16,112 +17,75 @@ import (
 	"github.com/jgorodetsky/dott/internal/rows"
 )
 
-// summary is the health screen: counts, then what needs you, then the fine ones by section.
-func (a *App) summary() {
-	counts := map[engine.State]int{}
-	var needs []engine.Status
-	bySection := map[string][]string{}
-	var sections []string
-	for _, s := range a.All {
-		counts[s.State]++
-		if s.State.NeedsYou() {
-			needs = append(needs, s)
-		} else if s.State == engine.OK {
-			if _, ok := bySection[s.Section]; !ok {
-				sections = append(sections, s.Section)
-			}
-			bySection[s.Section] = append(bySection[s.Section], s.ID)
-		}
-	}
-	head := a.Env.Short(a.M.Dir)
-	if a.Env.Has("git") {
-		if b := (gitx.Repo{Dir: a.M.Dir}).Branch(); b != "" {
-			head += " (" + b + ")"
-		}
-	}
-	a.say("%s  %s", bold("dott"), dim(head+" · settings "+a.Env.Short(a.C.CfgAt)))
-	a.say("%s ok · %s need you · %s off · %s not on this Mac",
-		green(fmt.Sprint(counts[engine.OK])), amber(fmt.Sprint(counts[engine.Drift]+counts[engine.Conflict]+counts[engine.Blocked])),
-		fmt.Sprint(counts[engine.Off]), fmt.Sprint(counts[engine.Absent]))
-	if len(needs) == 0 {
-		a.say("  %s", green("✓ nothing needs you"))
-	}
-	for _, s := range needs {
-		a.say("  %s %-16s %s", amber("~"), s.ID, s.Detail)
-	}
-	for _, sec := range sections {
-		a.say("  %s %s", dim(sec+":"), strings.Join(bySection[sec], " · "))
-	}
-	for _, l := range a.hints() {
-		a.say("  %s %s", dim("·"), l)
-	}
-	if bs := fsops.Backups(a.C.St.Backups()); len(bs) > 0 {
-		a.say("  %s", dim(plural(len(bs), "backup", "backups")+" in "+a.Env.Short(a.C.St.Backups())))
-	}
+// hintsFor are optional clean-ups for one item: git settings you also set in the repo. They
+// only read, and are kept until the next scan.
+func (a *App) hintsFor(it *manifest.Item) []string {
+	return a.C.Shared("hints:"+it.ID, func() any { return a.hints(it) }).([]string)
 }
 
-// hints are optional clean-ups the old health screen showed: git settings you also set in
-// the repo, and brew packages the Brewfile doesn't list. They only read.
-func (a *App) hints() []string {
+func (a *App) hints(it *manifest.Item) []string {
 	var out []string
-	for _, it := range a.M.Items {
-		switch {
-		case it.Kind == "include-line" && it.Format == "gitconfig" && a.Env.Has("git"):
-			mine := gitKeys(a.C.Path(it.File))
-			repo := gitKeys(a.C.Path(it.Line))
-			var same, diff []string
-			for k, v := range mine {
-				if strings.HasPrefix(k, "include.") {
-					continue
-				}
-				if rv, ok := repo[k]; ok {
-					if rv == v {
-						same = append(same, k[strings.LastIndex(k, ".")+1:])
-					} else {
-						diff = append(diff, k[strings.LastIndex(k, ".")+1:])
-					}
-				}
-			}
-			sort.Strings(same)
-			sort.Strings(diff)
-			short := a.Env.Short(a.C.Path(it.File))
-			if len(same) > 0 {
-				out = append(out, fmt.Sprintf("%s: %s also set in the repo (optional to remove): %s", short, plural(len(same), "setting", "settings"), list(same, 4)))
-			}
-			if len(diff) > 0 {
-				out = append(out, fmt.Sprintf("%s: %s set differently; the repo's include comes later, so it wins: %s", short, plural(len(diff), "setting", "settings"), list(diff, 4)))
-			}
-		case it.Kind == "brew-bundle":
-			b := kinds.BrewPath()
-			if b == "" {
+	switch {
+	case it.Kind == "include-line" && it.Format == "gitconfig" && a.Env.Has("git"):
+		mine := gitKeys(a.C.Path(it.File))
+		repo := gitKeys(a.C.Path(it.Line))
+		var same, diff []string
+		for k, v := range mine {
+			if strings.HasPrefix(k, "include.") {
 				continue
 			}
-			pkgs, _, err := kinds.ParseBrewfile(a.C.Path(it.Brewfile))
-			if err != nil {
-				continue
-			}
-			listed := map[string]bool{}
-			for _, p := range pkgs {
-				listed[p.Short] = true
-			}
-			leaves, _ := runEnv([]string{"HOMEBREW_NO_AUTO_UPDATE=1"}, b, "leaves", "--installed-on-request")
-			casks, _ := runEnv([]string{"HOMEBREW_NO_AUTO_UPDATE=1"}, b, "list", "--cask", "-1")
-			var extra []string
-			seen := map[string]bool{}
-			for _, n := range strings.Fields(string(leaves) + " " + string(casks)) {
-				n = n[strings.LastIndex(n, "/")+1:]
-				if !listed[n] && !seen[n] {
-					seen[n] = true
-					extra = append(extra, n)
+			if rv, ok := repo[k]; ok {
+				if rv == v {
+					same = append(same, k[strings.LastIndex(k, ".")+1:])
+				} else {
+					diff = append(diff, k[strings.LastIndex(k, ".")+1:])
 				}
 			}
-			sort.Strings(extra)
-			if len(extra) > 0 {
-				out = append(out, fmt.Sprintf("brew: %s not in the Brewfile: %s", plural(len(extra), "package", "packages"), list(extra, 5)))
-			}
+		}
+		sort.Strings(same)
+		sort.Strings(diff)
+		short := a.Env.Short(a.C.Path(it.File))
+		if len(same) > 0 {
+			out = append(out, fmt.Sprintf("%s: %s also set in the repo (optional to remove): %s", short, plural(len(same), "setting", "settings"), list(same, 4)))
+		}
+		if len(diff) > 0 {
+			out = append(out, fmt.Sprintf("%s: %s set differently; the repo's include comes later, so it wins: %s", short, plural(len(diff), "setting", "settings"), list(diff, 4)))
 		}
 	}
 	return out
+}
+
+// notInBrewfile are the packages you installed yourself that no Brewfile lists, kept until
+// the next scan.
+func (a *App) notInBrewfile() []string {
+	return a.C.Shared("not-in-brewfile", func() any { return a.unlisted() }).([]string)
+}
+
+func (a *App) unlisted() []string {
+	b := kinds.BrewPath()
+	if b == "" {
+		return nil
+	}
+	listed := map[string]bool{}
+	for _, f := range a.brewFiles() {
+		pkgs, _, _ := kinds.ParseBrewfile(f)
+		for _, p := range pkgs {
+			listed[p.Short] = true
+		}
+	}
+	leaves, _ := runEnv([]string{"HOMEBREW_NO_AUTO_UPDATE=1"}, b, "leaves", "--installed-on-request")
+	casks, _ := runEnv([]string{"HOMEBREW_NO_AUTO_UPDATE=1"}, b, "list", "--cask", "-1")
+	var extra []string
+	seen := map[string]bool{}
+	for _, n := range strings.Fields(string(leaves) + " " + string(casks)) {
+		n = n[strings.LastIndex(n, "/")+1:]
+		if !listed[n] && !seen[n] {
+			seen[n] = true
+			extra = append(extra, n)
+		}
+	}
+	sort.Strings(extra)
+	return extra
 }
 
 // gitKeys reads a git config file's own settings (not what it includes), key -> values.
@@ -197,9 +161,24 @@ func (a *App) restoreRows() ([]rows.Row, map[string]*Action) {
 			names = append(names, a.Env.Short(e.Path))
 		}
 		id := filepath.Base(dir)
-		rs = append(rs, rows.Row{ID: id, Tier: rows.MUT, Command: id, Desc: list(names, 3)})
+		// what is there now may hold your own edits, made after the backup: a typed yes, and a
+		// backup of it first
+		var now []string
+		for _, e := range entries {
+			if _, err := os.Lstat(e.Path); err == nil {
+				now = append(now, a.Env.Short(e.Path))
+			}
+		}
+		tier := rows.MUT
+		if len(now) > 0 {
+			tier = rows.DGR
+		}
+		rs = append(rs, rows.Row{ID: id, Tier: tier, Command: id, Desc: list(names, 3)})
 		acts[id] = &Action{Changes: func(a *App) (*Plan, error) {
 			p := &Plan{Title: "restore " + id}
+			if len(now) > 0 {
+				p.Lines = append(p.Lines, "back up what is there now, with any edits of yours: "+strings.Join(now, ", "))
+			}
 			for _, e := range entries {
 				switch {
 				case !e.Existed:
@@ -211,11 +190,22 @@ func (a *App) restoreRows() ([]rows.Row, map[string]*Action) {
 				}
 			}
 			p.Run = func(a *App) error {
+				b := fsops.NewBackup(a.C.St.Backups(), "before-restore")
+				for _, e := range entries {
+					if err := b.Save(e.Path); err != nil {
+						return err
+					}
+				}
+				if err := b.Close(); err != nil {
+					return err
+				}
 				if err := fsops.Restore(dir); err != nil {
 					return err
 				}
 				a.say("%s restored %s", green("✓"), id)
-				return nil
+				a.say("  %s", dim("backup: "+a.Env.Short(b.Dir)+" (undo: dott restore)"))
+				// a restore can put back a dott.toml or local.toml from before an add
+				return a.reload()
 			}
 			return p, nil
 		}}
@@ -291,9 +281,15 @@ func (a *App) refresh() error {
 		return fmt.Errorf("git isn't here yet (it comes with Xcode's command line tools: xcode-select --install)")
 	}
 	g := gitx.Repo{Dir: a.M.Dir}
+	if !g.Checkout() {
+		return fmt.Errorf("%s isn't a git checkout, so there is nothing to pull", a.Env.Short(a.M.Dir))
+	}
 	up, err := g.Upstream()
-	if err != nil {
-		return fmt.Errorf("branch %s has no remote branch to pull from", g.Branch())
+	switch {
+	case err != nil && g.Branch() == "":
+		return fmt.Errorf("%s has no branch checked out (a detached HEAD), so there is nothing to pull", a.Env.Short(a.M.Dir))
+	case err != nil:
+		return fmt.Errorf("branch %s has no remote branch to pull from (git branch -u origin/%s sets one)", g.Branch(), g.Branch())
 	}
 	a.say("%s", dim("fetching "+up+"…"))
 	if _, err := g.Git(nil, nil, "fetch", "--quiet"); err != nil {
@@ -301,6 +297,7 @@ func (a *App) refresh() error {
 	}
 	log, _ := g.Git(nil, nil, "log", "--oneline", "--no-decorate", "HEAD..@{u}")
 	if strings.TrimSpace(log) == "" {
+		a.news.text = ""
 		a.say("%s up to date with %s", green("✓"), up)
 		return nil
 	}
@@ -346,7 +343,7 @@ func (a *App) refresh() error {
 	if st, _ := g.Git(nil, nil, "status", "--porcelain"); strings.TrimSpace(st) != "" {
 		a.say("%s", amber("~ you have local changes; the pull keeps them unless they clash"))
 	}
-	if !a.T.YesNo("Pull and fix?", true) {
+	if !a.T.YesNo("Pull?", true) {
 		a.say("nothing pulled")
 		return nil
 	}
@@ -355,19 +352,18 @@ func (a *App) refresh() error {
 	if err := x.Stream([]string{"git", "-C", a.M.Dir, "pull", "--ff-only"}); err != nil {
 		return fmt.Errorf("the pull didn't fast-forward; sort it out in %s, then refresh again", a.Env.Short(a.M.Dir))
 	}
-	m, err := manifest.Load(a.M.Dir)
-	if err != nil {
+	a.news.text = ""
+	if err := a.reload(); err != nil {
 		return err
 	}
-	a.M, a.C.M = m, m
-	a.Scan()
-	p, err := a.fixAllPlan()
-	if err != nil {
+	if _, err := a.fixAllPlan(); err != nil {
 		a.say("%s pulled; %v", green("✓"), err)
 		return nil
 	}
-	printPlan(a.w(), p)
-	return p.Run(a)
+	// a yes to the pull is not a yes to the fixes: show them and ask again
+	a.say("%s pulled", green("✓"))
+	a.confirmRun(rows.Row{Command: "fix everything"}, &Action{Changes: func(a *App) (*Plan, error) { return a.fixAllPlan() }}, false)
+	return nil
 }
 
 // isScript says whether a changed file runs code: executable on the remote, or a shell or

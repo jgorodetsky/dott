@@ -22,6 +22,7 @@ git fetch --quiet origin
 ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null || { echo "release.sh: $tag exists" >&2; exit 1; }
 
 scripts/check.sh
+echo "release.sh: did the personas try this version? (the persona-qa skill, on demand; not a gate)"
 
 sign=-a
 [ -n "$(git config user.signingkey || true)" ] && sign=-s

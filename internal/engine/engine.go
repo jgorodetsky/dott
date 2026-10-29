@@ -381,7 +381,7 @@ func (c *Ctx) needs(it *manifest.Item, s *Status, all []Status) {
 	for _, n := range it.Needs {
 		if pkg, ok := strings.CutPrefix(n, "brew:"); ok {
 			if !c.BrewHas(pkg) {
-				s.State, s.Detail, s.Fix = Blocked, s.Detail+"; needs "+pkg+" (brew), which is not installed", "fix brew/"+pkg+" first"
+				s.State, s.Detail, s.Fix = Blocked, s.Detail+"; needs "+pkg+" (brew), which is not installed", brewFix(pkg, all)
 				return
 			}
 			continue
@@ -398,6 +398,18 @@ func (c *Ctx) needs(it *manifest.Item, s *Status, all []Status) {
 // Packages is a kind that can say whether one package is installed (brew-bundle does).
 type Packages interface {
 	Has(c *Ctx, name string) bool
+}
+
+// brewFix is the hint for an item that waits for a brew package: the package's own row when a
+// Brewfile lists it, else the brew command.
+func brewFix(pkg string, all []Status) string {
+	short := pkg[strings.LastIndex(pkg, "/")+1:]
+	for _, o := range all {
+		if p, ok := o.Part(short); ok && o.Kind == "brew-bundle" {
+			return "fix " + p.ID + " first"
+		}
+	}
+	return "brew install " + pkg + " first"
 }
 
 // BrewHas says whether a formula or cask is installed, for needs = ["brew:NAME"].

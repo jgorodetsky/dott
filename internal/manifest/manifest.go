@@ -30,7 +30,64 @@ type Manifest struct {
 	Aliases *Aliases            `toml:"aliases"`
 	Edits   []Edit              `toml:"edit"`
 
-	Dir string `toml:"-"` // the repo root
+	Dir       string `toml:"-"` // the repo root
+	LocalPath string `toml:"-"` // this Mac's local.toml, when it has one
+	LocalDir  string `toml:"-"` // where this Mac's own files live: {{local}}
+}
+
+// LocalName is the file next to this Mac's settings that lists its own items.
+const LocalName = "local.toml"
+
+// local is local.toml: items and edit rows that exist only on this Mac.
+type local struct {
+	Items []Item `toml:"item"`
+	Edits []Edit `toml:"edit"`
+}
+
+// MergeLocal adds this Mac's own items from path (local.toml) to the manifest, marked as
+// local, with the same checks as the repo's. A missing file adds nothing. dir is {{local}}.
+// Paths in local items should start with ~, / or {{local}}: a relative one is the repo's.
+func (m *Manifest) MergeLocal(path, dir string) error {
+	m.LocalPath, m.LocalDir = path, dir
+	l := &local{}
+	md, err := toml.DecodeFile(path, l)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if u := md.Undecoded(); len(u) > 0 {
+		keys := make([]string, len(u))
+		for i, k := range u {
+			keys[i] = k.String()
+		}
+		return fmt.Errorf("%s: unknown keys: %s", path, strings.Join(keys, ", "))
+	}
+	repo := map[string]bool{}
+	for _, it := range m.Items {
+		repo[it.ID] = true
+	}
+	for i := range l.Items {
+		if repo[l.Items[i].ID] {
+			return fmt.Errorf("%s: id %q is also in the repo's %s; pick another", path, l.Items[i].ID, FileName)
+		}
+		l.Items[i].Origin = "local"
+	}
+	m.Items = append(m.Items, l.Items...)
+	m.Edits = append(m.Edits, l.Edits...)
+	if err := m.check(); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return nil
+}
+
+// File is the manifest file an item is written in: dott.toml, or this Mac's local.toml.
+func (m *Manifest) File(it Item) string {
+	if it.Origin == "local" {
+		return m.LocalPath
+	}
+	return filepath.Join(m.Dir, FileName)
 }
 
 // PathSpec finds a path that differs between machines.
@@ -90,6 +147,7 @@ type Item struct {
 	Present     string   `toml:"present"` // ok when this command exists (instead of check)
 	PlanText    []string `toml:"plan_text"`
 	Interactive bool     `toml:"interactive"`
+	Undo        []string `toml:"undo"` // turning it off runs this, after a yes
 
 	// brew-bundle
 	Brewfile      string            `toml:"brewfile"`
@@ -110,6 +168,8 @@ type Item struct {
 	// rules
 	Source  string       `toml:"source"`
 	Targets []RuleTarget `toml:"targets"`
+
+	Origin string `toml:"-"` // "local" for an item from this Mac's local.toml
 }
 
 // RuleTarget is one agent tool that reads the rules file.
@@ -158,7 +218,7 @@ func Load(dir string) (*Manifest, error) {
 		for i, k := range u {
 			keys[i] = k.String()
 		}
-		return nil, fmt.Errorf("%s: unknown keys: %s", path, strings.Join(keys, ", "))
+		return nil, fmt.Errorf("%s: unknown keys: %s (this dott.toml may need a newer dott: brew upgrade dott)", path, strings.Join(keys, ", "))
 	}
 	m.Dir = dir
 	if err := m.check(); err != nil {
@@ -226,6 +286,9 @@ func (it Item) need() error {
 			return fmt.Errorf("kind %s needs %s", it.Kind, req[i])
 		}
 	}
+	if len(it.Undo) > 0 && it.Kind != "script" {
+		return fmt.Errorf("undo is only for script items")
+	}
 	switch it.Kind {
 	case "include-line":
 		if (it.Line == "") == (it.LinesFrom == "") {
@@ -278,7 +341,7 @@ func (m *Manifest) Repo(p string) string {
 	return filepath.Join(m.Dir, p)
 }
 
-// Template fills {{repo}} and {{source}}.
+// Template fills {{repo}}, {{source}} and {{local}}.
 func (m *Manifest) Template(s, source string) string {
-	return strings.NewReplacer("{{repo}}", m.Dir, "{{source}}", source).Replace(s)
+	return strings.NewReplacer("{{repo}}", m.Dir, "{{source}}", source, "{{local}}", m.LocalDir).Replace(s)
 }

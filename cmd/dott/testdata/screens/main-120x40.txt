@@ -1,0 +1,32 @@
+dott › type any words, like: fix pkgs; esc quits                                                                  40/40
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  dott · ~/dotfiles · 0 ok · 12 need you · 1 off · 0 not here
+  ✓ ok ~ drift ! conflict ✗ blocked · off │ ● runs ◆ asks ▲ type yes ▸ opens
+▌ ◆  fix everything                              9 items in drift · your own things and questions are left to you      │
+▌ ◆  fix pkgs              drift      packages   the Brewfile                                                          │
+▌ ◆  fix pkgs/node         drift      packages   runs npx                                                              │
+▌ ◆  fix pkgs/fxapp        drift      packages   an app                                                                │
+▌ ◆  fix loader            drift      shell      the loader line                                                       │
+▌ ◆  fix theme             drift      term       a theme, added once                                                   │
+▌ ◆  fix gitinc            drift      git        include the repo's git config                                         │
+▌ ◆  fix ignore            drift      git        global ignore lines                                                   │
+▌ ◆  fix themes            drift      term       theme files                                                           │
+▌ ◆  fix themes/one        drift      term       theme files                                                           │
+▌ ◆  fix themes/two        drift      term       theme files                                                           │
+▌ ◆  fix cfg               drift      term       a config folder                                                       │
+▌ ▸  resolve mine          conflict   term       a folder you may have your own of                                     │
+▌ ◆  fix tool              drift      tools      a script item                                                         │
+▌ ◆  fix ask               drift      tools      a script that asks its own questions                                  │
+▌ ●  fix skills            blocked    agents     agent skills
+▌ ◆  fix rules             drift      agents     one rules file
+▌ ◆  fix rules/claude      drift      agents     one rules file
+▌ ◆  fix rules/codex       drift      agents     one rules file
+▌ ~  pkgs                  drift      packages   the Brewfile
+▌ ~  loader                drift      shell      the loader line
+▌ ~  theme                 drift      term       a theme, added once
+▌ ~  gitinc                drift      git        include the repo's git config
+▌ ~  ignore                drift      git        global ignore lines
+▌ ~  themes                drift      term       theme files
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+pkgs, loader, theme, gitinc, ignore, themes and 3 more                                                              1/2
+changes things, shows what it will do and asks first

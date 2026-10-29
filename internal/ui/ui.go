@@ -17,6 +17,8 @@ type Term struct {
 	In   *bufio.Reader
 	Out  io.Writer
 	Cols int // screen width, 0 when unknown
+	Rows int // screen height, 0 when unknown
+	tty  int // the terminal's fd for flushInput; 0 when In is not a terminal
 }
 
 // OpenTTY opens the controlling terminal, so questions work even when stdin is a pipe.
@@ -25,8 +27,73 @@ func OpenTTY() (*Term, func(), error) {
 	if err != nil {
 		return nil, func() {}, err
 	}
-	cols, _, _ := term.GetSize(int(f.Fd()))
-	return &Term{In: bufio.NewReader(f), Out: f, Cols: cols}, func() { f.Close() }, nil
+	cols, rows, _ := term.GetSize(int(f.Fd()))
+	return &Term{In: bufio.NewReader(f), Out: &screen{w: f, cols: cols}, Cols: cols, Rows: rows, tty: int(f.Fd())}, func() { f.Close() }, nil
+}
+
+// fresh drops keys typed before a question showed, so an early y or enter (typed ahead
+// while dott was busy) can't answer it.
+func (t *Term) fresh() {
+	if t.tty == 0 {
+		return
+	}
+	_ = flushInput(t.tty)
+	_, _ = t.In.Discard(t.In.Buffered())
+}
+
+// screen counts the screen rows written since the last Mark, so a picker can leave the last
+// of them in view. Color codes take no room; a line wider than the screen takes two rows.
+type screen struct {
+	w         io.Writer
+	cols      int
+	rows, col int
+	inEscape  bool
+}
+
+func (s *screen) Write(p []byte) (int, error) {
+	for _, r := range string(p) {
+		switch {
+		case s.inEscape:
+			s.inEscape = r < 0x40 || r > 0x7e || r == '['
+		case r == 0x1b:
+			s.inEscape = true
+		case r == '\n':
+			s.rows, s.col = s.rows+1, 0
+		case r == '\r':
+			s.col = 0
+		default:
+			if s.col++; s.cols > 0 && s.col > s.cols {
+				s.rows, s.col = s.rows+1, 1
+			}
+		}
+	}
+	return s.w.Write(p)
+}
+
+// Printed is how many screen rows were written since the last Mark.
+func (t *Term) Printed() int {
+	s, ok := t.Out.(*screen)
+	if !ok {
+		return 0
+	}
+	if s.col > 0 {
+		return s.rows + 1
+	}
+	return s.rows
+}
+
+// Mark starts the count of Printed again.
+func (t *Term) Mark() {
+	if s, ok := t.Out.(*screen); ok {
+		s.rows, s.col = 0, 0
+	}
+}
+
+// echoed counts the line the terminal echoed for an answer: its enter moved to a new row.
+func (t *Term) echoed() {
+	if s, ok := t.Out.(*screen); ok {
+		s.rows, s.col = s.rows+1, 0
+	}
 }
 
 // Answer to Run it? [Y/n/copy].
@@ -40,6 +107,7 @@ const (
 
 func (t *Term) line() (string, error) {
 	s, err := t.In.ReadString('\n')
+	t.echoed()
 	if err != nil && s == "" {
 		return "", err
 	}
@@ -56,6 +124,7 @@ func (t *Term) Plan(title string, plan []string) {
 
 // Confirm asks Run it? [Y/n/copy]. Enter means yes. Anything it doesn't know means no.
 func (t *Term) Confirm() Answer {
+	t.fresh()
 	fmt.Fprint(t.Out, "Run it? [Y/n/copy] ")
 	s, err := t.line()
 	switch {
@@ -71,6 +140,7 @@ func (t *Term) Confirm() Answer {
 
 // TypeYes runs a dangerous change only after the word yes. Anything else cancels.
 func (t *Term) TypeYes() bool {
+	t.fresh()
 	fmt.Fprint(t.Out, "\033[31m▲\033[0m type yes to run it, anything else cancels: ")
 	s, err := t.line()
 	return err == nil && s == "yes"
@@ -91,12 +161,14 @@ func CopyText(s string) error {
 // Ask reads one line of text. ok is false when the input ended (ctrl-d) or was empty
 // and there is no default.
 func (t *Term) Ask(prompt, def string) (string, bool) {
+	t.fresh()
 	if def != "" {
 		fmt.Fprintf(t.Out, "%s \033[2m[%s]\033[0m: ", prompt, def)
 	} else {
 		fmt.Fprintf(t.Out, "%s: ", prompt)
 	}
 	s, err := t.In.ReadString('\n')
+	t.echoed()
 	if err != nil && s == "" {
 		return "", false
 	}
@@ -109,6 +181,7 @@ func (t *Term) Ask(prompt, def string) (string, bool) {
 
 // YesNo asks a question; enter gives def.
 func (t *Term) YesNo(q string, def bool) bool {
+	t.fresh()
 	hint := "[y/N]"
 	if def {
 		hint = "[Y/n]"
@@ -127,6 +200,7 @@ func (t *Term) YesNo(q string, def bool) bool {
 // Choose asks for one of the options by number; enter picks the first. ok is false
 // when the user typed nothing usable or q.
 func (t *Term) Choose(q string, options []string) (int, bool) {
+	t.fresh()
 	fmt.Fprintf(t.Out, "\033[1m%s\033[0m\n", q)
 	for i, o := range options {
 		fmt.Fprintf(t.Out, "  %d  %s\n", i+1, o)

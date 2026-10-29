@@ -175,12 +175,24 @@ func (a *App) fixAllPlan() (*Plan, error) {
 			}
 		}
 	}
+	// an item that waits gets its steps planned now, so the plan shows what it will run; it is
+	// planned again once what it needs is in place
 	for _, id := range later {
-		p.Lines = append(p.Lines, id+": then, once what it needs is in place")
+		s, _ := a.status(id)
+		after := strings.TrimSuffix(strings.TrimPrefix(s.Fix, "fix "), " first")
+		changes, err := a.C.Kinds[a.item(id).Kind].Plan(a.C, a.item(id), s, "", false)
+		if err != nil || len(changes) == 0 {
+			p.Lines = append(p.Lines, id+": after "+after+", its own fix")
+			continue
+		}
+		for _, ch := range changes {
+			p.Lines = append(p.Lines, id+": after "+after+": "+ch.Summary)
+			if ch.Shell != "" {
+				shell = append(shell, ch.Shell)
+			}
+		}
 	}
-	for _, s := range skipped {
-		p.Lines = append(p.Lines, dim("left alone: "+s))
-	}
+	p.Left = skipped
 	p.Shell = strings.Join(shell, "\n")
 	p.Run = func(a *App) error {
 		failed := 0
@@ -309,7 +321,7 @@ func (a *App) resolveRows(id, part string) ([]rows.Row, map[string]*Action) {
 		{ID: "keep", Tier: rows.MUT, Command: "keep mine", Desc: "turn " + label + " off on this Mac; yours stays as it is"},
 		{ID: "replace", Tier: rows.DGR, Command: "replace with the repo's", Desc: "yours goes to the backup first; dott restore puts it back"},
 	}
-	acts["keep"] = &Action{Changes: func(a *App) (*Plan, error) { return a.offPlan(label, true), nil }}
+	acts["keep"] = &Action{Changes: func(a *App) (*Plan, error) { return a.switchPlan(label, true, false), nil }}
 	acts["replace"] = &Action{Changes: func(a *App) (*Plan, error) { return a.fixPlan(id, part, true) }}
 	if mine, theirs, ok := a.comparePaths(id, part); ok {
 		rs = append(rs, rows.Row{ID: "compare", Tier: rows.RO, Command: "compare", Desc: "yours (" + a.Env.Short(mine) + ") next to the repo's"})
@@ -371,31 +383,72 @@ func (a *App) compare(mine, theirs string) error {
 }
 
 // offPlan turns an item or part off (or back on) on this Mac.
-func (a *App) offPlan(id string, off bool) *Plan {
+func (a *App) offPlan(id string, off bool) *Plan { return a.switchPlan(id, off, true) }
+
+// switchPlan turns an item or part off (or back on) on this Mac. Turning off an item with
+// undo also runs it, when undo is true; keep mine passes false, since yours stays.
+func (a *App) switchPlan(id string, off, undo bool) *Plan {
 	verb, line := "turn on ", "count "+id+" on this Mac again"
 	if off {
 		verb, line = "turn off ", "stop checking "+id+" on this Mac; nothing of yours changes"
 	}
-	return &Plan{
-		Title: verb + id,
-		Lines: []string{line, dim("saved in " + a.Env.Short(a.C.CfgAt))},
-		Run: func(a *App) error {
-			a.Cfg.SetOff(id, off)
-			if err := a.SaveConfig(); err != nil {
+	var argv []string
+	if it := a.item(id); off && undo && it != nil && len(it.Undo) > 0 && a.undoable(id) {
+		argv = a.C.Argv(it.Undo)
+		line = "stop checking " + id + " on this Mac"
+	}
+	p := &Plan{Title: verb + id, Lines: []string{line}}
+	if argv != nil {
+		p.Lines = append(p.Lines, "and undo it here: "+engine.Quote(argv...))
+		p.Shell = engine.Quote(argv...)
+	}
+	p.Lines = append(p.Lines, dim("saved in "+a.Env.Short(a.C.CfgAt)))
+	p.Run = func(a *App) error {
+		if argv != nil {
+			if err := a.runUndo(id, argv); err != nil {
 				return err
 			}
-			a.say("%s %s%s", green("✓"), verb, id)
-			return nil
-		},
+		}
+		a.Cfg.SetOff(id, off)
+		if err := a.SaveConfig(); err != nil {
+			return err
+		}
+		a.say("%s %s%s", green("✓"), verb, id)
+		return nil
 	}
+	return p
 }
 
-// groupPlan turns an optional group on or off on this Mac.
+// undoable says whether an item is set up here at all, so undo has something to take away.
+func (a *App) undoable(id string) bool {
+	s, ok := a.status(id)
+	return ok && s.State != engine.Off && s.State != engine.Absent
+}
+
+// runUndo runs an item's undo command. When it fails, the item stays on.
+func (a *App) runUndo(id string, argv []string) error {
+	x := &engine.Exec{C: a.C, Out: a.w()}
+	if err := x.Stream(argv); err != nil {
+		return fmt.Errorf("undo of %s failed, so it stays on: %v", id, err)
+	}
+	return nil
+}
+
+// groupPlan turns an optional group on or off on this Mac. Turning it off runs the undo of
+// each of its items that has one, and stops at the first that fails.
 func (a *App) groupPlan(g string, on bool) *Plan {
 	var items []string
+	type undo struct {
+		id   string
+		argv []string
+	}
+	var undos []undo
 	for _, it := range a.M.Items {
 		if it.Group == g {
 			items = append(items, it.ID)
+			if !on && len(it.Undo) > 0 && a.Cfg.Groups[g] && a.undoable(it.ID) {
+				undos = append(undos, undo{it.ID, a.C.Argv(it.Undo)})
+			}
 		}
 		for pkg, pg := range it.PackageGroups {
 			if pg == g {
@@ -405,37 +458,33 @@ func (a *App) groupPlan(g string, on bool) *Plan {
 	}
 	verb := "turn off "
 	line := "stop checking " + strings.Join(items, ", ") + " on this Mac; nothing installed is removed"
+	if len(undos) > 0 {
+		line = "stop checking " + strings.Join(items, ", ") + " on this Mac"
+	}
 	if on {
 		verb = "turn on "
 		line = "check " + strings.Join(items, ", ") + " on this Mac; then fix them from the list"
 	}
-	return &Plan{
-		Title: verb + g + ": " + a.M.Groups[g],
-		Lines: []string{line, dim("saved in " + a.Env.Short(a.C.CfgAt))},
-		Run: func(a *App) error {
-			a.Cfg.Groups[g] = on
-			if err := a.SaveConfig(); err != nil {
+	p := &Plan{Title: verb + g + ": " + a.M.Groups[g], Lines: []string{line}}
+	var shell []string
+	for _, u := range undos {
+		p.Lines = append(p.Lines, "undo "+u.id+" here: "+engine.Quote(u.argv...))
+		shell = append(shell, engine.Quote(u.argv...))
+	}
+	p.Shell = strings.Join(shell, "\n")
+	p.Lines = append(p.Lines, dim("saved in "+a.Env.Short(a.C.CfgAt)))
+	p.Run = func(a *App) error {
+		for _, u := range undos {
+			if err := a.runUndo(u.id, u.argv); err != nil {
 				return err
 			}
-			a.say("%s %s%s", green("✓"), verb, g)
-			return nil
-		},
-	}
-}
-
-// showItem prints everything dott knows about one item.
-func (a *App) showItem(s engine.Status) {
-	mark := map[engine.State]string{engine.OK: green("✓"), engine.Off: dim("·"), engine.Absent: dim("·"), engine.Drift: amber("~"), engine.Conflict: red("!"), engine.Blocked: red("✗")}
-	a.say("%s %s  %s", mark[s.State], bold(s.ID), dim(s.Desc))
-	a.say("  %s: %s", s.State, s.Detail)
-	if s.Fix != "" && s.State != engine.OK {
-		a.say("  %s", dim("next: "+s.Fix))
-	}
-	for _, p := range s.Parts {
-		desc := ""
-		if p.Desc != "" {
-			desc = "  " + dim(p.Desc)
 		}
-		a.say("    %s %-22s %s%s", mark[p.State], p.ID[len(s.ID)+1:], p.Detail, desc)
+		a.Cfg.Groups[g] = on
+		if err := a.SaveConfig(); err != nil {
+			return err
+		}
+		a.say("%s %s%s", green("✓"), verb, g)
+		return nil
 	}
+	return p
 }

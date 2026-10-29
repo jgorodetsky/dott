@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestBackupRestore(t *testing.T) {
@@ -95,5 +96,30 @@ func TestSymlinkRefusesRealFiles(t *testing.T) {
 	os.WriteFile(p, []byte("mine"), 0o644)
 	if err := Symlink("/x", p); err == nil {
 		t.Fatal("Symlink replaced a real file")
+	}
+}
+
+// TestBackupsNewestFirst: two backups made in the same second sort by when they were made,
+// not by name.
+func TestBackupsNewestFirst(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now()
+	for i, name := range []string{"20261028-231504-skills", "20261028-231504-themes"} {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f := filepath.Join(dir, "backup.json")
+		if err := os.WriteFile(f, []byte("[]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// skills was made last
+		at := now.Add(-time.Duration(i) * 300 * time.Millisecond)
+		if err := os.Chtimes(f, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := filepath.Base(Backups(root)[0]); got != "20261028-231504-skills" {
+		t.Fatalf("newest is %s", got)
 	}
 }

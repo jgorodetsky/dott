@@ -205,6 +205,14 @@ case "$1 $2" in
   "install --formula") shift 2; for p in "$@"; do echo "${p##*/}" >> "$db"; done; exit 0 ;;
   "install --cask") shift 3; for p in "$@"; do echo "cask ${p##*/}" >> "$db"; done; exit 0 ;;
   "trust "*) exit 0 ;;
+  "info --json=v2")
+    case "$3" in
+      nope) echo "Error: No available formula with the name \"nope\"" >&2; exit 1 ;;
+      */*/*) echo "{\"formulae\":[{\"name\":\"${3##*/}\",\"full_name\":\"$3\",\"desc\":\"stub $3\"}],\"casks\":[]}" ;;
+      *app) echo "{\"formulae\":[],\"casks\":[{\"token\":\"$3\",\"full_token\":\"$3\",\"desc\":\"stub app $3\"}]}" ;;
+      *) echo "{\"formulae\":[{\"name\":\"$3\",\"full_name\":\"$3\",\"desc\":\"stub $3\"}],\"casks\":[]}" ;;
+    esac
+    exit 0 ;;
 esac
 exit 0
 `,
@@ -235,30 +243,53 @@ exit 0
 // those rules targets apply, and nothing else.
 func New(t testing.TB) *Fixture {
 	t.Helper()
-	root := t.TempDir()
+	f, err := Make(t.TempDir())
+	must(t, err)
+	return f
+}
+
+// Make builds a fixture in root, an empty folder, for tools that are not tests (the QA
+// driver). It refuses a root inside the real HOME's dotfiles or config.
+func Make(root string) (*Fixture, error) {
 	root, _ = filepath.EvalSymlinks(root)
 	f := &Fixture{Root: root, Home: filepath.Join(root, "home"), Repo: filepath.Join(root, "repo"), Bin: filepath.Join(root, "bin"), Log: filepath.Join(root, "stub.log")}
-	for _, d := range []string{f.Home, f.Repo, f.Bin, filepath.Join(f.Home, ".claude"), filepath.Join(f.Home, ".codex")} {
-		must(t, os.MkdirAll(d, 0o755))
+	if real, _ := os.UserHomeDir(); real != "" && (f.Home == real || root == real) {
+		return nil, fmt.Errorf("refusing to build a fake machine at the real HOME %s", real)
 	}
-	f.Write(t, "repo/dott.toml", Manifest)
+	for _, d := range []string{f.Home, f.Repo, f.Bin, filepath.Join(f.Home, ".claude"), filepath.Join(f.Home, ".codex")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return nil, err
+		}
+	}
+	if err := f.Put("repo/dott.toml", Manifest); err != nil {
+		return nil, err
+	}
 	for p, s := range repoFiles {
-		f.Write(t, "repo/"+p, s)
+		if err := f.Put("repo/"+p, s); err != nil {
+			return nil, err
+		}
 	}
 	for name, s := range stubs {
-		p := filepath.Join(f.Bin, name)
-		must(t, os.WriteFile(p, []byte(s), 0o755))
+		if err := os.WriteFile(filepath.Join(f.Bin, name), []byte(s), 0o755); err != nil {
+			return nil, err
+		}
 	}
-	must(t, os.WriteFile(f.Log, nil, 0o644))
-	return f
+	return f, os.WriteFile(f.Log, nil, 0o644)
 }
 
 // Write writes a file under the fixture root, making folders.
 func (f *Fixture) Write(t testing.TB, rel, data string) {
 	t.Helper()
+	must(t, f.Put(rel, data))
+}
+
+// Put writes a file under the fixture root, making folders.
+func (f *Fixture) Put(rel, data string) error {
 	p := filepath.Join(f.Root, rel)
-	must(t, os.MkdirAll(filepath.Dir(p), 0o755))
-	must(t, os.WriteFile(p, []byte(data), 0o644))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(p, []byte(data), 0o644)
 }
 
 // Path is a path under the fixture root.
@@ -337,6 +368,13 @@ func (f *Fixture) Calls(t testing.TB) []string {
 // contents. Two equal hashes mean nothing under dir changed.
 func HashTree(t testing.TB, dir string) string {
 	t.Helper()
+	h, err := Hash(dir)
+	must(t, err)
+	return h
+}
+
+// Hash is HashTree for tools that are not tests.
+func Hash(dir string) (string, error) {
 	var lines []string
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -363,10 +401,9 @@ func HashTree(t testing.TB, dir string) string {
 		lines = append(lines, line)
 		return nil
 	})
-	must(t, err)
 	sort.Strings(lines)
 	h := sha256.Sum256([]byte(strings.Join(lines, "\n")))
-	return hex.EncodeToString(h[:])
+	return hex.EncodeToString(h[:]), err
 }
 
 // Git runs git in dir for a test, with a fixed identity and no signing.

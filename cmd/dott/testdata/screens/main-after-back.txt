@@ -1,0 +1,32 @@
+dott › cfg                                                                                                         1/24
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  dott · ~/dotfiles · 10 ok · 2 need you · 1 off · 0 not here
+  ✓ ok ~ drift ! conflict ✗ blocked · off │ ● runs ◆ asks ▲ type yes ▸ opens
+▌ ✓  cfg                   ok         term       a config folder
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.config/fx/cfg → cfg                                                                                              1/2
+opens it: where it lives, its files, its fixes; esc comes back

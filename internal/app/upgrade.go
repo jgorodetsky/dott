@@ -184,7 +184,7 @@ func (a *App) upgradeRows() ([]rows.Row, map[string]*Action) {
 				if len(next) == 0 {
 					return nil
 				}
-				a.Act(rows.Row{ID: "upgrade", Tier: rows.PICK, Command: "upgrade"}, &Action{Next: func(*App) ([]rows.Row, map[string]*Action) { return next, nacts }})
+				a.Act(rows.Row{ID: "upgrade", Tier: rows.PICK, Command: "upgrade"}, &Action{Next: func(*App) ([]rows.Row, map[string]*Action) { return next, nacts }}, "", false)
 				return nil
 			}}, nil
 	}}
@@ -321,6 +321,9 @@ func brewAge(b string) string {
 	cache, _ := exec.Command(b, "--cache").Output()
 	var t time.Time
 	for _, p := range []string{filepath.Join(strings.TrimSpace(string(repo)), ".git", "FETCH_HEAD"), filepath.Join(strings.TrimSpace(string(cache)), "api")} {
+		if !filepath.IsAbs(p) {
+			continue // brew printed no folder: a relative path would be read where dott runs
+		}
 		if fi, err := os.Stat(p); err == nil && fi.ModTime().After(t) {
 			t = fi.ModTime()
 		}

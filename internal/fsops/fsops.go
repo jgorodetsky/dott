@@ -119,7 +119,20 @@ func Backups(root string) []string {
 			}
 		}
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(out)))
+	// by when each was made: names have whole seconds, and a fix makes several in one second
+	made := func(dir string) time.Time {
+		fi, err := os.Stat(filepath.Join(dir, "backup.json"))
+		if err != nil {
+			return time.Time{}
+		}
+		return fi.ModTime()
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if ti, tj := made(out[i]), made(out[j]); !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return out[i] > out[j]
+	})
 	return out
 }
 

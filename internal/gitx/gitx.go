@@ -4,11 +4,13 @@ package gitx
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // Repo is one git checkout.
@@ -115,6 +117,12 @@ func (r Repo) CommitOnly(msg string, edits []Edit) (string, error) {
 	return commit, nil
 }
 
+// Checkout says whether the folder is a git checkout (a work tree).
+func (r Repo) Checkout() bool {
+	out, err := r.one("rev-parse", "--is-inside-work-tree")
+	return err == nil && out == "true"
+}
+
 // Branch is the current branch, empty when detached.
 func (r Repo) Branch() string {
 	b, _ := r.one("branch", "--show-current")
@@ -124,4 +132,44 @@ func (r Repo) Branch() string {
 // Upstream is the branch HEAD pulls from, like origin/main.
 func (r Repo) Upstream() (string, error) {
 	return r.one("rev-parse", "--abbrev-ref", "@{u}")
+}
+
+// RemoteNews asks the remote, without fetching, whether the branch it tracks has commits
+// that HEAD doesn't. It writes nothing: no fetch, no refs. git runs in a session of its own
+// with no terminal and GIT_TERMINAL_PROMPT=0, so neither git nor ssh can stop to ask for a
+// password; they fail instead, and so does this. When ctx ends, git and everything it
+// started (ssh) are killed. It returns the upstream's name, like origin/main, when there
+// is news.
+func (r Repo) RemoteNews(ctx context.Context) (string, error) {
+	b := r.Branch()
+	if b == "" {
+		return "", fmt.Errorf("not on a branch")
+	}
+	remote, err := r.one("config", "branch."+b+".remote")
+	if err != nil {
+		return "", fmt.Errorf("branch %s tracks no remote", b)
+	}
+	ref, err := r.one("config", "branch."+b+".merge")
+	if err != nil {
+		return "", fmt.Errorf("branch %s tracks no remote branch", b)
+	}
+	cmd := exec.CommandContext(ctx, "git", "--no-optional-locks", "-C", r.Dir, "ls-remote", "--", remote, ref)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) } // git and its ssh
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git ls-remote %s: %v", remote, err)
+	}
+	sha, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\t")
+	if sha == "" {
+		return "", fmt.Errorf("%s has no %s", remote, ref)
+	}
+	if head, _ := r.one("rev-parse", "HEAD"); head == sha {
+		return "", nil
+	}
+	if _, err := r.one("merge-base", "--is-ancestor", sha, "HEAD"); err == nil {
+		return "", nil // HEAD has it already: you are ahead
+	}
+	return remote + "/" + strings.TrimPrefix(ref, "refs/heads/"), nil
 }

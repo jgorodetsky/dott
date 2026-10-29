@@ -36,11 +36,7 @@ func (e Exec) run(argv, lines []string) ([]string, int, error) {
 
 func (e Exec) Pick(req Request) (Result, error) {
 	got, code, err := e.run(args(req), req.Lines)
-	r := Result{Code: code}
-	if len(got) > 0 {
-		r.Line = got[0]
-	}
-	return r, err
+	return result(got, code), err
 }
 
 func (e Exec) Filter(lines []string, query string) ([]string, error) {

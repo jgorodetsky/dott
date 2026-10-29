@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,7 +15,13 @@ import (
 	"github.com/jgorodetsky/dott/internal/ui"
 )
 
-var aliasName = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+// aliasName can't start with - or ., which zsh would read as an option.
+var aliasName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
+
+// oneField makes text one line with no tabs, for one field of notes.tsv.
+func oneField(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
 
 func zsh(timeout time.Duration, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -71,6 +78,36 @@ func InsertAlias(text []byte, name, line, header string, before *regexp.Regexp, 
 		out = append(out, "", header, line)
 	}
 	return joinLines(out)
+}
+
+// changeLines are the plan lines for one file: each line the change removes, then each it
+// adds. A file that doesn't change has none.
+func changeLines(short string, old, new []byte) []string {
+	// missing are the lines of a that b doesn't have, as many times as b lacks them
+	missing := func(a, b []string) []string {
+		have := map[string]int{}
+		for _, l := range b {
+			have[l]++
+		}
+		var out []string
+		for _, l := range a {
+			if have[l] > 0 {
+				have[l]--
+				continue
+			}
+			out = append(out, l)
+		}
+		return out
+	}
+	o, n := splitLines(old), splitLines(new)
+	var out []string
+	for _, l := range missing(o, n) {
+		out = append(out, short+": remove "+l)
+	}
+	for _, l := range missing(n, o) {
+		out = append(out, short+": add "+l)
+	}
+	return out
 }
 
 // RemoveAlias drops the alias line, and a "# name - ..." note right above it.
@@ -158,7 +195,7 @@ func (a *App) addAlias() error {
 		return nil
 	}
 	if !aliasName.MatchString(name) {
-		return fmt.Errorf("an alias name is letters, numbers, - _ . only")
+		return fmt.Errorf("an alias name is letters, numbers, - _ . only, and starts with a letter, number or _")
 	}
 	cmd, ok := a.T.Ask("what should "+name+" run", "")
 	if !ok {
@@ -197,6 +234,7 @@ func (a *App) addAlias() error {
 	}
 	repo := where == 0
 	note, _ := a.T.Ask("what does it do? one line for the notes (enter: skip)", "")
+	note = oneField(note)
 	before := regexp.MustCompile(al.Before)
 	file := localFile
 	if repo {
@@ -258,6 +296,10 @@ func (a *App) offerCommit(msg, q string, edits []gitx.Edit) {
 	if !a.Env.Has("git") {
 		return
 	}
+	if !(gitx.Repo{Dir: a.M.Dir}).Checkout() {
+		a.say("  %s", dim(a.Env.Short(a.M.Dir)+" isn't a git checkout, so there is nothing to commit"))
+		return
+	}
 	if !a.T.YesNo(q+dim(" (only this change; your signing prompt may pop up; not pushed)"), false) {
 		a.say("  %s", dim("not committed; it works here. commit and push when you're ready"))
 		return
@@ -277,7 +319,7 @@ func (a *App) removeAlias() error {
 		return nil
 	}
 	if !aliasName.MatchString(name) {
-		return fmt.Errorf("an alias name is letters, numbers, - _ . only")
+		return fmt.Errorf("an alias name is letters, numbers, - _ . only, and starts with a letter, number or _")
 	}
 	re := regexp.MustCompile(`(?m)^\s*alias (-- )?` + regexp.QuoteMeta(name) + `=`)
 	repoFile, localFile := a.C.Path(al.RepoFile), a.C.Path(al.LocalFile)
@@ -352,11 +394,23 @@ func (a *App) removeAlias() error {
 		}
 	}
 	p := &Plan{Title: "remove alias " + name}
+	paths := make([]string, 0, len(files))
 	for f := range files {
-		p.Lines = append(p.Lines, "change "+a.Env.Short(f))
+		paths = append(paths, f)
+	}
+	sort.Strings(paths)
+	for _, f := range paths {
+		cur, _ := os.ReadFile(f)
+		lines := changeLines(a.Env.Short(f), cur, files[f])
+		if len(lines) == 0 {
+			delete(files, f) // nothing to change there: no write, no backup
+			continue
+		}
+		p.Lines = append(p.Lines, lines...)
 	}
 	printPlan(a.T.Out, p)
 	if a.T.Confirm() != ui.Yes {
+		a.say("skipped remove alias %s", name)
 		return nil
 	}
 	if err := a.writeChecked("unalias-"+name, files, check); err != nil {

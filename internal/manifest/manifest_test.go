@@ -22,7 +22,8 @@ func TestLoadErrors(t *testing.T) {
 	}
 	cases := map[string]string{
 		"schema = 2\n":                              "schema = 2",
-		ok + "colour = 1\n":                         "unknown keys",
+		ok + "colour = 1\n":                         "may need a newer dott",
+		ok + "undo = [\"x\"]\n":                     "undo is only for script items",
 		strings.Replace(ok, `"a"`, `"A b"`, 1):      "id has to be",
 		ok + strings.TrimPrefix(ok, "schema = 1\n"): "id used twice",
 		strings.Replace(ok, `"link"`, `"lnk"`, 1):   "known kinds",
@@ -51,5 +52,31 @@ func TestRepoAndTemplate(t *testing.T) {
 	}
 	if got := m.Template("{{repo}}/x {{source}}", "/s"); got != "/r/x /s" {
 		t.Errorf("Template = %q", got)
+	}
+}
+
+func TestMergeLocal(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, FileName), []byte("schema = 1\n[[item]]\nid = \"a\"\nkind = \"link\"\nlink = \"~/a\"\nto = \"a\"\n"), 0o644)
+	m, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lp := filepath.Join(t.TempDir(), LocalName)
+	if err := m.MergeLocal(lp, "/files"); err != nil || len(m.Items) != 1 {
+		t.Fatalf("a missing local.toml: %v, %d items", err, len(m.Items))
+	}
+	os.WriteFile(lp, []byte("[[item]]\nid = \"b\"\nkind = \"link\"\nlink = \"~/b\"\nto = \"{{local}}/b\"\n"), 0o644)
+	if err := m.MergeLocal(lp, "/files"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := m.Item("b")
+	if b.Origin != "local" || m.File(b) != lp || m.Template(b.To, "") != "/files/b" {
+		t.Fatalf("b = %+v, file %s", b, m.File(b))
+	}
+	os.WriteFile(lp, []byte("[[item]]\nid = \"a\"\nkind = \"link\"\nlink = \"~/x\"\nto = \"x\"\n"), 0o644)
+	m2, _ := Load(dir)
+	if err := m2.MergeLocal(lp, "/files"); err == nil || !strings.Contains(err.Error(), "also in the repo") {
+		t.Fatalf("an id in both: %v", err)
 	}
 }

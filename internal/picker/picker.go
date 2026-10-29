@@ -7,6 +7,7 @@ package picker
 
 import (
 	"os"
+	"strconv"
 
 	"github.com/jgorodetsky/dott/internal/rows"
 )
@@ -17,14 +18,33 @@ type Request struct {
 	Query   string
 	Select1 bool   // a single match is picked without showing the picker
 	Prompt  string // defaults to "dott › "
-	Header  string // defaults to the legend
+	Header  string // lines above the list; defaults to the legend
 	History string // file for query history; empty for none
+	Ghost   string // grey text in an empty query
+	Height  int    // rows the picker takes; 0 for 32
 }
 
 // Result is what came back from a picker screen.
 type Result struct {
-	Line string // the picked line, empty when nothing was picked
-	Code int    // 0 picked, 1 no match, 130 the user quit (esc, ctrl-c)
+	Line  string // the picked line, empty when nothing was picked
+	Query string // what was typed, so a screen can come back with it
+	Back  bool   // esc: go back one screen
+	Code  int    // 0 picked or back, 1 no match, 130 the user quit (ctrl-c)
+}
+
+// result reads what fzf printed: the query, the key (esc or empty for enter), the line.
+func result(got []string, code int) Result {
+	r := Result{Code: code}
+	if len(got) > 0 {
+		r.Query = got[0]
+	}
+	if len(got) > 1 {
+		r.Back = got[1] == "esc"
+	}
+	if len(got) > 2 {
+		r.Line = got[2]
+	}
+	return r
 }
 
 // Quit codes from fzf.
@@ -53,7 +73,7 @@ func New() Backend {
 func match() []string {
 	return []string{
 		"--ansi", "--delimiter=\t", "--with-nth=" + rows.WithNth, "--nth=" + rows.Nth,
-		"--tabstop=1", "--exact", "--scheme=history",
+		"--tabstop=1", "--exact", "--scheme=history", "--tiebreak=chunk,index",
 	}
 }
 
@@ -65,12 +85,17 @@ func args(req Request) []string {
 	if header == "" {
 		header = rows.Legend
 	}
+	height := req.Height
+	if height <= 0 {
+		height = 32
+	}
 	a := append(match(),
-		"--height=32", "--reverse", "--info=inline-right",
+		"--height="+strconv.Itoa(height), "--reverse", "--info=inline-right",
 		"--query="+req.Query,
+		"--print-query", "--expect=esc", // esc goes back a screen; ctrl-c quits
 		"--prompt="+prompt,
 		"--header="+header,
-		"--ghost=type any words, like: fix aws",
+		"--ghost="+req.Ghost,
 		"--color=hl:yellow:bold:underline,hl+:yellow:bold:underline",
 		"--with-shell=/bin/sh -c",
 		`--preview=printf '\033[1m%s\033[0m\n\033[2m%s\033[0m\n' {8} {9}`,

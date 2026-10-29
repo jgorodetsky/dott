@@ -68,6 +68,7 @@ func (a *App) skillFromNpx() error {
 	}}
 	printPlan(a.T.Out, p)
 	if a.T.Confirm() != ui.Yes {
+		a.say("skipped %s", p.Title)
 		return nil
 	}
 	if len(argv) == 0 || !a.Env.Has(argv[0]) {
@@ -286,6 +287,7 @@ func (a *App) skillFromFolder() error {
 		Lines: []string{"remember it in " + a.Env.Short(a.C.CfgAt) + " (never in the repo)", "then install " + strings.Join(names, ", ")}}
 	printPlan(a.T.Out, p)
 	if a.T.Confirm() != ui.Yes {
+		a.say("skipped %s", p.Title)
 		return nil
 	}
 	if err := a.addLocalSource(dir); err != nil {

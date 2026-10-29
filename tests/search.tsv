@@ -1,4 +1,5 @@
 # what you type	the row it must find	at this rank or better
+# first>second: first is a row that opens a view that takes the query; second is found in it, at rank 1
 # rows come from a scan of the test fixture (internal/testkit) on a fresh fake HOME
 fix	fix-all	1
 fix every	fix-all	1
@@ -14,14 +15,18 @@ skills	why:skills	2
 upgrade	upgrade	1
 update	refresh	1
 refresh	refresh	1
-alias	alias-add	2
+alias	add>alias-add	2
 remove alias	alias-rm	1
-edit	edit:rc	2
-edit rc	edit:rc	1
-turn on extra	on-group:extra	1
-extra	on-group:extra	2
-turn off loader	off:loader	1
-add skill	add-skill	1
-permissions claude	perms:claude	1
-claude	perms:claude	3
-summary	summary	1
+edit	edits	2
+edit rc	edits>edit:rc	1
+turn on extra	parts>group:extra	1
+extra	parts	2
+turn off	turn-off	2
+add skill	add>add-skill	1
+permissions claude	perms>perms:claude	1
+claude	perms	3
+mine	item:mine	2
+loader	item:loader	3
+skills	item:skills	2
+add	add	1
+optional parts	parts	1

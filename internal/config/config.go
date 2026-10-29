@@ -26,7 +26,8 @@ type Config struct {
 
 // Local lists things that exist only on this Mac.
 type Local struct {
-	Skills []string `toml:"skills"` // folders of skills, or one skill folder each
+	Skills []string `toml:"skills"`        // folders of skills, or one skill folder each
+	Dir    string   `toml:"dir,omitempty"` // where files you track for this Mac only live
 }
 
 // Row is a custom picker row: a command of your own.
