@@ -64,12 +64,12 @@ func (s Status) Part(name string) (Status, bool) {
 
 // Change is one step of a fix.
 type Change struct {
-	Summary     string   // one line for the plan
-	Shell       string   // the same step as a shell command, for "copy"
-	Paths       []string // what it writes: each one is backed up first
-	Danger      bool     // it replaces something of yours: the user types yes
-	Interactive bool     // it needs the terminal and asks its own questions
-	Do          func(x *Exec) error
+	Summary     string              // one line for the plan
+	Shell       string              // the same step as a shell command, for "copy"
+	Paths       []string            // what it writes: each one is backed up first
+	Danger      bool                // it replaces something of yours: the user types yes
+	Interactive bool                // it needs the terminal and asks its own questions
+	Do          func(x *Exec) error // nil for a note: a plan line that runs nothing itself
 }
 
 // Kind checks and plans one kind of item.
@@ -507,6 +507,9 @@ func Apply(c *Ctx, it *manifest.Item, part string, changes []Change) (Result, er
 		}
 		if applyErr != nil {
 			break
+		}
+		if ch.Do == nil {
+			continue // a note in the plan, like the first lines of a script's plan
 		}
 		if err := ch.Do(x); err != nil {
 			applyErr = fmt.Errorf("%s: %w", ch.Summary, err)

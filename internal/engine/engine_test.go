@@ -8,6 +8,7 @@ import (
 
 	"github.com/jgorodetsky/dott/internal/engine"
 	"github.com/jgorodetsky/dott/internal/fsops"
+	"github.com/jgorodetsky/dott/internal/manifest"
 	"github.com/jgorodetsky/dott/internal/testkit"
 )
 
@@ -67,5 +68,30 @@ func TestLockBlocksASecondFix(t *testing.T) {
 	defer unlock()
 	if _, err := engine.Apply(c, &c.M.Items[1], "", nil); err == nil || !strings.Contains(err.Error(), "another dott") {
 		t.Fatalf("err %v", err)
+	}
+}
+
+// TestApplySkipsNoteSteps: a script whose plan prints several lines gets one step per line,
+// and only the last one runs something. The others are notes; Apply must not call them.
+func TestApplySkipsNoteSteps(t *testing.T) {
+	f := testkit.New(t)
+	f.Use(t)
+	c := f.Ctx(t, nil)
+	var it *manifest.Item
+	for i := range c.M.Items {
+		if c.M.Items[i].ID == "tool" {
+			it = &c.M.Items[i]
+		}
+	}
+	done := f.Path("home/.fx-done")
+	steps := []engine.Change{
+		{Summary: "build it first"},
+		{Summary: "create ~/.fx-done", Do: func(*engine.Exec) error { return os.WriteFile(done, nil, 0o644) }},
+	}
+	if _, err := engine.Apply(c, it, "", steps); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(done); err != nil {
+		t.Fatal("the step that runs did not run")
 	}
 }
