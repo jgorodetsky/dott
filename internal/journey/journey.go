@@ -13,6 +13,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/creack/pty"
 	"github.com/hinshun/vt10x"
@@ -57,6 +58,7 @@ func Start(env []string, cols, rows int, name string, args ...string) (*Screen, 
 		last: time.Now(), done: make(chan struct{})}
 	go func() {
 		b := make([]byte, 4096)
+		var held []byte // the start of a character that the last read cut in two
 		for {
 			n, err := ptmx.Read(b)
 			if n > 0 {
@@ -64,7 +66,9 @@ func Start(env []string, cols, rows int, name string, args ...string) (*Screen, 
 				s.buf.Write(b[:n])
 				s.last = time.Now()
 				s.mu.Unlock()
-				s.vt.Write(b[:n])
+				var ready []byte
+				ready, held = wholeRunes(held, b[:n])
+				s.vt.Write(ready)
 			}
 			if err != nil {
 				return
@@ -162,4 +166,19 @@ func (s *Screen) Exit(timeout time.Duration) (int, error) {
 	case <-time.After(timeout):
 		return -1, fmt.Errorf("still running after %s", timeout)
 	}
+}
+
+// wholeRunes joins what was held back with a new read, and splits off a character at its end
+// that the read cut in two. vt10x drops such a part instead of waiting for the rest.
+func wholeRunes(held, read []byte) (ready, rest []byte) {
+	data := append(held, read...)
+	for i := len(data) - 1; i >= 0 && i >= len(data)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(data[i]) {
+			if !utf8.FullRune(data[i:]) {
+				return data[:i], append([]byte(nil), data[i:]...)
+			}
+			break
+		}
+	}
+	return data, nil
 }

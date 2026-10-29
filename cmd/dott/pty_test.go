@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -167,15 +166,11 @@ func (s *screen) golden(name string) string {
 	if err != nil {
 		s.t.Fatalf("%v (run go test -update to write it); screen:\n%s", err, got)
 	}
-	if rule.ReplaceAllString(got, "─") != rule.ReplaceAllString(string(want), "─") {
+	if got != string(want) {
 		s.t.Errorf("screen %s differs (go test -update rewrites it)\n--- want\n%s--- got\n%s", name, want, got)
 	}
 	return got
 }
-
-// rule is a separator line that fzf draws. Its width is fzf's, and on a slow machine fzf can
-// draw it a column short before its window has its full width, so goldens don't compare it.
-var rule = regexp.MustCompile(`(?m)^─+$`)
 
 const (
 	down   = "\x1b[B"
