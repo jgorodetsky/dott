@@ -803,6 +803,42 @@ func read(t *testing.T, p string) string {
 	return string(b)
 }
 
+// TestPTYHangupQuits closes dott's terminal, the way closing a tab does, at the picker, in an
+// item's view and at a question: dott must quit, not keep running on a terminal that is gone.
+// When the hangup signal doesn't reach dott (a shell or login leads the terminal's session and
+// ignores it, as under GNU screen), only the failed reads tell it.
+func TestPTYHangupQuits(t *testing.T) {
+	for _, below := range []bool{false, true} {
+		for _, tc := range []struct {
+			name string
+			args []string
+			wait string
+		}{
+			{"picker", nil, prompt},
+			{"item view", []string{"loader"}, "loader › "},
+			{"question", []string{"fix", "loader"}, "Run it? [Y/n/copy]"},
+		} {
+			name := tc.name
+			if below {
+				name += ", no hangup signal"
+			}
+			t.Run(name, func(t *testing.T) {
+				_, env := machine(t)
+				script := `exec "$0" "$@"` // dott leads the session and gets the hangup signal
+				if below {
+					script = `trap '' HUP; "$0" "$@"; :` // the shell leads it and ignores the signal
+				}
+				s := open(t, env, 120, 40, "/bin/sh", append([]string{"-c", script, dottBin(t)}, tc.args...)...)
+				s.waitFor(tc.wait, 1)
+				s.Hangup()
+				if _, err := s.Exit(5 * time.Second); err != nil {
+					t.Fatalf("after a hangup, dott is %v", err)
+				}
+			})
+		}
+	}
+}
+
 // TestJourneyAskAction: an ask action runs in the terminal, picks with dott --pick and comes
 // back to the item's view. Esc or ctrl-c stops only the script, and keys typed while a
 // script ran don't pick a row.

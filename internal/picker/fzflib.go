@@ -42,7 +42,7 @@ func (l Lib) Pick(req Request) (Result, error) {
 	if err != nil {
 		return Result{Code: code}, err
 	}
-	return result(got, code), nil
+	return checked(result(got, code), nil)
 }
 
 func (l Lib) Filter(lines []string, query string) ([]string, error) {

@@ -6,6 +6,7 @@
 package picker
 
 import (
+	"errors"
 	"os"
 	"strconv"
 
@@ -57,8 +58,21 @@ func result(got []string, code int) Result {
 // Quit codes from fzf.
 const (
 	CodeNoMatch   = 1
+	CodeError     = 2
 	CodeInterrupt = 130
 )
+
+// errFailed is fzf's own error exit. It is what a picker on a terminal that is gone gets:
+// without it, dott would take it as nothing picked and open the next picker at once, forever.
+var errFailed = errors.New("the picker failed (fzf exit 2): its terminal is gone, or fzf hit an error")
+
+// checked turns fzf's error exit into an error.
+func checked(r Result, err error) (Result, error) {
+	if err == nil && r.Code == CodeError {
+		err = errFailed
+	}
+	return r, err
+}
 
 // Backend runs fzf.
 type Backend interface {
