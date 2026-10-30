@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 )
 
@@ -24,6 +25,8 @@ func (x *Exec) Stream(argv []string, env ...string) error {
 }
 
 // TTY runs argv with the terminal attached, for commands that ask their own questions.
+// ctrl-c stops the command, not dott: dott catches it while the command runs. Notify, not
+// Ignore, since a command inherits an ignored signal.
 func TTY(dir string, argv []string, env ...string) error {
 	if len(argv) == 0 {
 		return fmt.Errorf("empty command")
@@ -37,6 +40,9 @@ func TTY(dir string, argv []string, env ...string) error {
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = f, f, f
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	defer signal.Stop(sig)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s: %w", strings.Join(argv, " "), err)
 	}

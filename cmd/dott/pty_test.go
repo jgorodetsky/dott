@@ -185,9 +185,7 @@ const (
 func TestPTYCtrlCRestoresTerminal(t *testing.T) {
 	_, env := machine(t)
 	s := open(t, env, 120, 40, "/bin/sh", "-c", `echo "BEFORE:$(stty -g)"; "$0" loader; echo "EXIT:$? AFTER:$(stty -g)"`, dottBin(t))
-	s.waitFor(prompt+"loader", 1)
-	s.send(down + "\r")
-	s.waitFor("loader › ", 1)
+	s.waitFor("loader › ", 1) // an item's whole id opens it
 	s.send(ctrlC)
 	s.waitFor("AFTER:", 1)
 	text := s.Text()
@@ -409,6 +407,173 @@ func TestJourneyNoChangeStays(t *testing.T) {
 	s.exit()
 }
 
+// withLinks adds a script item whose check also lists its parts (lines 3 on: name, state,
+// desc), like clipfmt's link rules. It is off (exit 5) until a part is on, it drifts when
+// ~/.links-stale is there, and its detail shows the DOTT that dott gave it.
+func withLinks(t *testing.T, f *testkit.Fixture) {
+	t.Helper()
+	f.Write(t, "repo/links.sh", `#!/usr/bin/env bash
+on="$HOME/.links-on"
+case "$1" in
+  --check)
+    n=$(grep -c . "$on" 2>/dev/null || true)
+    if [ "${n:-0}" = 0 ]; then echo "no rule is on (DOTT=$DOTT)"; echo "turn one on"; code=5
+    elif [ -f "$HOME/.links-stale" ]; then echo "stale"; echo "rebuild it"; code=1
+    else echo "$n on"; echo ""; code=0; fi
+    for r in alpha beta; do
+      if grep -qx "$r" "$on" 2>/dev/null; then st=ok; else st=off; fi
+      printf '%s\t%s\t%s\n' "$r" "$st" "the $r rule"
+    done
+    exit $code ;;
+  --plan) echo "rebuild" ;;
+  apply) rm -f "$HOME/.links-stale" ;;
+  list) echo "rules: alpha beta" ;;
+  plan-on) echo "turn $2 on"; echo "then check it" ;;
+  on) echo "$2" >> "$on" ;;
+  off) grep -vx "$2" "$on" > "$on.tmp"; mv "$on.tmp" "$on" ;;
+  rm) echo "removed $2" > "$HOME/.links-removed" ;;
+  ask)
+    got="$(printf '%s\n' alpha beta gamma | "$DOTT" --pick --prompt "which rule")" || exit 130
+    word="$("$DOTT" --pick --input --prompt "a word" --preview 'echo you typed: {q}')" || exit 130
+    echo "$got $word" > "$HOME/.links-asked" ;;
+  nap) echo "napping"; sleep "$2"; echo "awake" ;;
+  read) printf 'ok? [Y/n] '; read -r a; echo "got $a" ;;
+esac
+`)
+	b, err := os.ReadFile(f.Path("repo/dott.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write(t, "repo/dott.toml", string(b)+`
+[[item]]
+id = "links"
+kind = "script"
+section = "tools"
+desc = "link rules"
+check = ["bash", "{{repo}}/links.sh", "--check"]
+plan = ["bash", "{{repo}}/links.sh", "--plan"]
+apply = ["bash", "{{repo}}/links.sh", "apply"]
+
+[[edit]]
+name = "links"
+file = "links.sh"
+desc = "the links script"
+
+[[item.action]]
+name = "list the rules"
+tier = "look"
+run = ["bash", "{{repo}}/links.sh", "list"]
+
+[[item.action]]
+name = "turn on {{part}}"
+part = true
+states = ["off"]
+tier = "change"
+run = ["bash", "{{repo}}/links.sh", "on", "{{part}}"]
+plan = ["bash", "{{repo}}/links.sh", "plan-on", "{{part}}"]
+
+[[item.action]]
+name = "turn off {{part}}"
+part = true
+states = ["ok"]
+tier = "change"
+run = ["bash", "{{repo}}/links.sh", "off", "{{part}}"]
+
+[[item.action]]
+name = "ask me"
+tier = "ask"
+run = ["bash", "{{repo}}/links.sh", "ask"]
+
+[[item.action]]
+name = "read a line"
+tier = "ask"
+run = ["bash", "{{repo}}/links.sh", "read"]
+
+[[item.action]]
+name = "nap briefly"
+tier = "ask"
+run = ["bash", "{{repo}}/links.sh", "nap", "1"]
+
+[[item.action]]
+name = "nap long"
+tier = "ask"
+run = ["bash", "{{repo}}/links.sh", "nap", "30"]
+
+[[item.action]]
+name = "remove {{part}}"
+part = true
+tier = "danger"
+run = ["bash", "{{repo}}/links.sh", "rm", "{{part}}"]
+`)
+}
+
+// TestJourneyScriptParts: a script's parts show in its view. Off (exit 5) is not a fix: no
+// fix row, and fix everything leaves it alone. Typing a part's name finds and opens it.
+func TestJourneyScriptParts(t *testing.T) {
+	f, env := machine(t)
+	withLinks(t, f)
+	// the edit a file row names links too: words that are a row's whole name pick that row
+	s := open(t, env, 120, 40, dottBin(t), "links")
+	s.waitScreen("links › ")
+	got := s.Snapshot()
+	for _, want := range []string{"links · off · no rule is on (DOTT=", "alpha", "beta", "the beta rule"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("no %q in the links view:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "turn off links/") || strings.Contains(got, "fix links") {
+		t.Fatalf("an off script item got fix or turn-off rows:\n%s", got)
+	}
+	s.send(ctrlC)
+	s.Exit(10 * time.Second)
+	cmd := exec.Command(dottBin(t), "--json")
+	cmd.Env = env
+	if out, _ := cmd.Output(); !strings.Contains(string(out), "DOTT="+dottBin(t)) {
+		t.Fatalf("the script didn't get DOTT=%s: %s", dottBin(t), out)
+	}
+
+	s = open(t, env, 120, 40, dottBin(t), "beta")
+	s.waitScreen("turn on beta")
+	if got := s.Snapshot(); !strings.Contains(got, "turn on beta") || strings.Contains(got, "turn off beta") {
+		t.Fatalf("an off part shows turn on only:\n%s", got)
+	}
+	s.enter("turn on")
+	s.waitFor("turn beta on", 1) // the plan comes from the action's plan command
+	s.answer("Run it? [Y/n/copy]", "")
+	s.waitFor("✓ turn on beta", 1)
+	s.waitScreen("turn off beta") // still in the part's view, which shows the new state
+	s.send("\x15")                // ctrl-u: an empty query
+	s.enter("remove")
+	s.answer("type yes", "yes")
+	s.waitFor("✓ remove beta", 1)
+	s.send(esc)
+	s.waitScreen("links › beta") // the item's view keeps the query that led into the part
+	s.send("\x15")
+	s.enter("list the rules")
+	s.waitFor("rules: alpha beta", 1)
+	s.send(ctrlC)
+	s.Exit(10 * time.Second)
+	if got := read(t, f.Path("home/.links-on")); got != "beta\n" {
+		t.Fatalf("~/.links-on is %q", got)
+	}
+	if got := read(t, f.Path("home/.links-removed")); got != "removed beta\n" {
+		t.Fatalf("remove ran with %q", got)
+	}
+	os.Remove(f.Path("home/.links-on"))
+
+	// a part on and the item stale: the item's own fix shows, even though it has parts
+	f.Write(t, "home/.links-on", "beta\n")
+	f.Write(t, "home/.links-stale", "")
+	s = open(t, env, 120, 40, dottBin(t), "fix", "links")
+	s.answer("Run it? [Y/n/copy]", "")
+	s.waitFor("✓ links", 1)
+	s.send(ctrlC)
+	s.Exit(10 * time.Second)
+	if _, err := os.Stat(f.Path("home/.links-stale")); err == nil {
+		t.Fatal("fix links did not run its apply")
+	}
+}
+
 // TestJourneyItemThenBack is the bug from v0.1.0: dott <item> showed the item, then dropped
 // to the main list. Now a single match opens the item's view, esc goes back to the main list
 // with the words still typed, and esc again quits.
@@ -468,9 +633,7 @@ func TestJourneyOpenAFile(t *testing.T) {
 // TestJourneyFixInItemView: a fix from an item's view stays in that view, which shows the
 // new state.
 func TestJourneyFixInItemView(t *testing.T) {
-	s := start(t, "loader")
-	s.waitFor(prompt+"loader", 1)
-	s.send(down + "\r") // the second row: the item, under its fix
+	s := start(t, "loader") // an item's whole id opens it, though fix loader matches too
 	s.waitFor("loader › ", 1)
 	s.waitFor("loader · drift", 1)
 	s.enter("fix loader")
@@ -638,6 +801,64 @@ func read(t *testing.T, p string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// TestJourneyAskAction: an ask action runs in the terminal, picks with dott --pick and comes
+// back to the item's view. Esc or ctrl-c stops only the script, and keys typed while a
+// script ran don't pick a row.
+func TestJourneyAskAction(t *testing.T) {
+	f, env := machine(t)
+	withLinks(t, f)
+	s := open(t, env, 120, 40, dottBin(t), "links")
+	s.waitScreen("links › ")
+	s.enter("ask me")
+	s.waitScreen("which rule › ")
+	s.enter("gamma")
+	s.waitScreen("a word ›")
+	s.send("hello")
+	s.waitScreen("you typed: hello")
+	s.send("\r")
+	s.waitFor("✓ ask me", 1)
+	s.waitScreen("links › ")
+	if got := read(t, f.Path("home/.links-asked")); got != "gamma hello\n" {
+		t.Fatalf("the script got %q", got)
+	}
+
+	s.enter("ask me")
+	s.waitScreen("which rule › ")
+	s.send(esc)
+	s.waitFor("stopped ask me", 1)
+	s.waitScreen("links › ")
+
+	s.enter("nap long")
+	s.waitFor("napping", 1)
+	s.send(ctrlC)
+	s.waitFor("stopped nap long", 1)
+	s.waitScreen("links › ")
+
+	s.enter("read a line")
+	s.answer("ok? [Y/n]", "n")
+	s.waitFor("✓ read a line", 1)
+	s.waitScreen("links › ")
+	s.enter("beta")
+	s.waitScreen("links/beta › ") // a picker after a script that read the terminal draws
+	s.send(esc)
+	s.waitScreen("links › beta")
+	s.send("\x15")
+
+	s.enter("nap briefly")
+	s.waitFor("napping", 1)
+	s.send("\r") // typed while the script runs
+	s.waitFor("✓ nap briefly", 1)
+	if err := s.Still(500*time.Millisecond, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	after := s.Text()[strings.LastIndex(s.Text(), "✓ nap briefly"):]
+	if strings.Contains(after, "links/") || !strings.Contains(s.Snapshot(), "links › ") {
+		t.Fatalf("a key typed during the script picked a row:\n%s", s.Snapshot())
+	}
+	s.send(ctrlC)
+	s.Exit(10 * time.Second)
 }
 
 // TestJourneyTrackAFile: add file moves a config file into the repo, links it back and adds

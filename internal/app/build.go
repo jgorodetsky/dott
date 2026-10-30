@@ -92,6 +92,17 @@ func (a *App) itemRow(s engine.Status) rows.Row {
 	if it := a.item(s.ID); it != nil && it.Origin == "local" {
 		r.Desc += " · this Mac only"
 	}
+	// a script's parts (clipfmt's link rules) go last, past the screen's edge mostly, so a
+	// part's name finds its item. Other kinds' parts have their own fix rows when they need you.
+	var names []string
+	for _, p := range s.Parts {
+		if s.Kind == "script" {
+			names = append(names, p.ID[len(s.ID)+1:])
+		}
+	}
+	if len(names) > 0 {
+		r.Desc += " · " + strings.Join(names, ", ")
+	}
 	return r
 }
 

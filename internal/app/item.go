@@ -1,12 +1,16 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jgorodetsky/dott/internal/engine"
 	"github.com/jgorodetsky/dott/internal/kinds"
@@ -17,7 +21,7 @@ import (
 // itemView is one item: what needs you in it, where it lives, its parts, its manifest
 // entry, and turning it off or on.
 func (a *App) itemView(id string) View {
-	return View{Prompt: id + " › ", Stay: true,
+	return View{Prompt: id + " › ", Stay: true, Forward: true,
 		Header: func(a *App) string { return a.itemHeader(id, "") },
 		Rows:   func(a *App) ([]rows.Row, map[string]*Action) { return a.itemRows(id) }}
 }
@@ -111,6 +115,7 @@ func (a *App) itemRows(id string) ([]rows.Row, map[string]*Action) {
 		add(&rs, rows.Row{ID: "part:" + p.ID, Tier: rows.ITEM, Command: name, Desc: desc, State: string(p.State), Detail: p.Detail},
 			&Action{Open: func(a *App) View { return a.partView(id, name) }})
 	}
+	a.actionRows(&rs, it, nil, add)
 	if file, line := a.manifestLine(id); line > 0 {
 		add(&rs, rows.Row{ID: "entry", Tier: rows.RO, Command: "manifest entry", Desc: fmt.Sprintf("%s:%d", filepath.Base(file), line), Detail: "its [[item]] in " + a.Env.Short(file)},
 			&Action{Show: func(a *App) error { return a.showEntry(id) }})
@@ -159,6 +164,7 @@ func (a *App) partRows(id, name string) ([]rows.Row, map[string]*Action) {
 	if r, act, ok := a.partNeed(s, p); ok {
 		add(&rs, r, act)
 	}
+	a.actionRows(&rs, it, &p, add)
 	for _, pl := range a.partPlaces(it, name) {
 		a.placeRow(&rs, pl, "", add)
 	}
@@ -171,7 +177,8 @@ func (a *App) partRows(id, name string) ([]rows.Row, map[string]*Action) {
 				}})
 		}
 	}
-	if p.State != engine.Absent {
+	// a script's parts are the script's to turn on and off (its actions), not dott's
+	if p.State != engine.Absent && it.Kind != "script" {
 		pid := p.ID
 		if a.Cfg.IsOff(pid) {
 			add(&rs, rows.Row{ID: "on:" + pid, Tier: rows.MUT, Command: "turn on " + pid, Desc: "check it on this Mac again", State: "off"},
@@ -182,6 +189,98 @@ func (a *App) partRows(id, name string) ([]rows.Row, map[string]*Action) {
 		}
 	}
 	return rs, acts
+}
+
+// actionRows are a script item's own [[item.action]] rows: with p nil the item's, else the
+// ones for part p in its state, with {{part}} filled in.
+func (a *App) actionRows(dst *[]rows.Row, it *manifest.Item, p *engine.Status, add adder) {
+	part := ""
+	if p != nil {
+		part = p.ID[len(it.ID)+1:]
+	}
+	for _, ac := range it.Actions {
+		if ac.Part != (p != nil) || p != nil && len(ac.States) > 0 && !slices.Contains(ac.States, string(p.State)) {
+			continue
+		}
+		fill := func(ss []string) []string {
+			out := make([]string, len(ss))
+			for i, s := range ss {
+				out[i] = strings.ReplaceAll(s, "{{part}}", part)
+			}
+			return a.C.Argv(out)
+		}
+		name, run, plan := strings.ReplaceAll(ac.Name, "{{part}}", part), fill(ac.Run), fill(ac.Plan)
+		r := rows.Row{ID: "action:" + name, Command: name, Desc: strings.ReplaceAll(ac.Desc, "{{part}}", part), Detail: "runs " + engine.Quote(run...)}
+		var act *Action
+		switch ac.Tier {
+		case "look":
+			r.Tier = rows.RO
+			act = &Action{Show: func(a *App) error { return (&engine.Exec{C: a.C, Out: a.w()}).Stream(run) }}
+		case "change", "danger":
+			r.Tier = rows.MUT
+			if ac.Tier == "danger" {
+				r.Tier = rows.DGR
+			}
+			act = &Action{Changes: func(a *App) (*Plan, error) { return a.actionPlan(name, run, plan) }}
+		case "ask":
+			r.Tier = rows.PICK
+			act = &Action{Guide: func(a *App) error { return a.ask(name, run) }}
+		}
+		add(dst, r, act)
+	}
+}
+
+// actionPlan is a change action's plan: what its plan command prints, a line per change, or
+// else the command it runs. It runs with the lock held.
+func (a *App) actionPlan(name string, run, plan []string) (*Plan, error) {
+	p := &Plan{Title: name, Lines: []string{"run " + engine.Quote(run...)}, Shell: engine.Quote(run...)}
+	if len(plan) > 0 {
+		out, code, err := a.C.Run(nil, plan, time.Minute)
+		if err == nil && code != 0 {
+			err = fmt.Errorf("%s exited %d: %s", engine.Quote(plan...), code, strings.TrimSpace(out))
+		}
+		if err != nil {
+			return nil, err
+		}
+		if ls := strings.Split(strings.TrimSpace(out), "\n"); ls[0] != "" {
+			p.Lines = ls
+		}
+	}
+	p.Run = func(a *App) error {
+		unlock, err := a.C.St.Lock()
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		if err := (&engine.Exec{C: a.C, Out: a.w()}).Stream(run); err != nil {
+			return err
+		}
+		a.say("%s %s", green("✓"), name)
+		return nil
+	}
+	return p, nil
+}
+
+// ask runs an action that asks its own questions in the terminal, with the lock held.
+// ctrl-c stops it and comes back here; keys typed while it ran don't reach the next picker.
+func (a *App) ask(name string, run []string) error {
+	unlock, err := a.C.St.Lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	err = engine.TTY(a.M.Dir, run)
+	a.T.Fresh()
+	var exit *exec.ExitError
+	switch {
+	case errors.As(err, &exit) && (exit.ExitCode() == 130 || exit.ExitCode() == -1):
+		a.say("%s stopped %s", dim("·"), name) // ctrl-c: killed (-1), or it caught it and quit
+	case err != nil:
+		return err
+	default:
+		a.say("%s %s", green("✓"), name)
+	}
+	return nil
 }
 
 // place is a file or folder an item touches.

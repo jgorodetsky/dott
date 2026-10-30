@@ -31,6 +31,7 @@ flags, for scripts:
   --json              print every item's state as JSON; changes nothing
   --init <repo>       set up this Mac from a dotfiles repo (owner/name or a path)
   --yes               answer yes to change prompts, never to dangerous ones
+  --pick              a picker for scripts: lines on stdin, the pick on stdout (dott --pick --help)
   --version           print the version
   --help              print this help
 
@@ -86,6 +87,9 @@ func parse(args []string) (options, error) {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "--pick" {
+		return pick(args[1:], os.Stdin, stdout, stderr)
+	}
 	o, err := parse(args)
 	if err != nil {
 		fmt.Fprintln(stderr, "dott:", err)
@@ -154,5 +158,10 @@ func fzfVersion() string {
 }
 
 func main() {
+	// scripts that dott runs call this dott back (dott --pick) through $DOTT, even when an
+	// older dott is first on PATH
+	if exe, err := os.Executable(); err == nil {
+		os.Setenv("DOTT", exe)
+	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }

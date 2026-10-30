@@ -57,9 +57,14 @@ func (a *App) browse(v View, query string, select1 bool) outcome {
 			a.say("%s: nothing to pick", strings.TrimSuffix(v.Prompt, " › "))
 			return back
 		}
-		// words that went on into this view but match none of its rows: show all of them
+		lines := rows.Lines(rs, a.T.Cols)
 		if first && select1 && query != "" {
-			if got, err := a.Pk.Filter(rows.Lines(rs, a.T.Cols), query); err == nil && len(got) == 0 {
+			if i := exactRow(rs, query); i >= 0 {
+				// words that are a row's whole name pick that row, even when others match them
+				// too: dott clipfmt opens the item, not it and the edit row that names it
+				lines = lines[i : i+1]
+			} else if got, err := a.Pk.Filter(lines, query); err == nil && len(got) == 0 {
+				// words that went on into this view but match none of its rows: show all of them
 				query, select1 = "", false
 			}
 		}
@@ -73,7 +78,7 @@ func (a *App) browse(v View, query string, select1 bool) outcome {
 				header = h + "\n" + rows.Legend
 			}
 		}
-		res, err := a.Pk.Pick(picker.Request{Lines: rows.Lines(rs, a.T.Cols), Query: query, Select1: select1,
+		res, err := a.Pk.Pick(picker.Request{Lines: lines, Query: query, Select1: select1,
 			Prompt: v.Prompt, Header: header, History: a.history(), Ghost: v.Ghost, Height: a.pickerHeight()})
 		a.T.Mark()
 		if err != nil {
@@ -118,6 +123,20 @@ func (a *App) browse(v View, query string, select1 bool) outcome {
 		}
 		query = ""
 	}
+}
+
+// exactRow is the index of the one row whose name is query, ignoring case, or -1.
+func exactRow(rs []rows.Row, query string) int {
+	at := -1
+	for i, r := range rs {
+		if strings.EqualFold(r.Command, strings.TrimSpace(query)) {
+			if at >= 0 {
+				return -1
+			}
+			at = i
+		}
+	}
+	return at
 }
 
 // forwardQuery is the part of a query that goes on into the view a row opens: the words past

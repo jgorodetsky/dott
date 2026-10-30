@@ -148,6 +148,7 @@ type Item struct {
 	PlanText    []string `toml:"plan_text"`
 	Interactive bool     `toml:"interactive"`
 	Undo        []string `toml:"undo"` // turning it off runs this, after a yes
+	Actions     []Action `toml:"action"`
 
 	// brew-bundle
 	Brewfile      string            `toml:"brewfile"`
@@ -270,6 +271,42 @@ func (m *Manifest) check() error {
 	return nil
 }
 
+// Action is a row of a script item's own, in its view or, with part, in each part's view;
+// there {{part}} in name and run is the part's name.
+type Action struct {
+	Name   string   `toml:"name"`
+	Desc   string   `toml:"desc"`
+	Part   bool     `toml:"part"`
+	States []string `toml:"states"` // the part states it shows for: ok, off, absent; none for all
+	Tier   string   `toml:"tier"`   // look (runs at once), change (Run it?), danger (type yes), ask (in the terminal)
+	Run    []string `toml:"run"`
+	Plan   []string `toml:"plan"` // prints the plan, a line per change; none for "run ..."
+}
+
+// Tiers are the kinds of action rows.
+var Tiers = []string{"look", "change", "danger", "ask"}
+
+func (a Action) check() error {
+	switch {
+	case a.Name == "":
+		return fmt.Errorf("an action needs a name")
+	case len(a.Run) == 0:
+		return fmt.Errorf("action %q needs run", a.Name)
+	case !slices.Contains(Tiers, a.Tier):
+		return fmt.Errorf("action %q: tier %q; use %s", a.Name, a.Tier, strings.Join(Tiers, ", "))
+	case !a.Part && strings.Contains(strings.Join(append(append([]string{a.Name}, a.Run...), a.Plan...), " "), "{{part}}"):
+		return fmt.Errorf("action %q: {{part}} needs part = true", a.Name)
+	case len(a.States) > 0 && !a.Part:
+		return fmt.Errorf("action %q: states needs part = true", a.Name)
+	}
+	for _, st := range a.States {
+		if st != "ok" && st != "off" && st != "absent" {
+			return fmt.Errorf("action %q: states %q; use ok, off or absent", a.Name, st)
+		}
+	}
+	return nil
+}
+
 // need checks that the fields a kind needs are there.
 func (it Item) need() error {
 	req := map[string][]string{
@@ -288,6 +325,14 @@ func (it Item) need() error {
 	}
 	if len(it.Undo) > 0 && it.Kind != "script" {
 		return fmt.Errorf("undo is only for script items")
+	}
+	if len(it.Actions) > 0 && it.Kind != "script" {
+		return fmt.Errorf("actions are only for script items")
+	}
+	for _, a := range it.Actions {
+		if err := a.check(); err != nil {
+			return err
+		}
 	}
 	switch it.Kind {
 	case "include-line":

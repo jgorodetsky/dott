@@ -8,7 +8,7 @@ dott reads a `dott.toml` from your dotfiles repo, checks each item on this Mac, 
 brew install jgorodetsky/dott/dott
 dott --init owner/dotfiles      # clones to ~/dotfiles (or give a folder), then remembers it
 dott                            # the picker over every item
-dott aws                        # the same, filtered; a single match is picked (an item opens its view)
+dott aws                        # the same, filtered; a single match, or a row's whole name, is picked (an item opens its view)
 dott fix everything --yes       # without a terminal: run one change row, never a dangerous one
 dott --json                     # every item's state as JSON; changes nothing
 ```
@@ -117,13 +117,38 @@ This is a guard, not a full scanner: read the diff before you push.
 | `include-line` | an include in a git config (`format = "gitconfig"`), or lines from a repo file (`lines_from`) |
 | `copy` | a repo file or folder copied to this Mac; a copy you changed is yours |
 | `brew-bundle` | the packages of a Brewfile; `package_groups` makes some optional |
-| `script` | anything else, through a script: `check` exits 0 ok, 1 drift, 2 conflict, 3 blocked, 4 absent |
+| `script` | anything else, through a script: `check` exits 0 ok, 1 drift, 2 conflict, 3 blocked, 4 absent, 5 off (not turned on yet) |
 | `skills` | agent skills installed with the installer you name, one shared copy and a link for claude |
 | `rules` | one rules file for every agent tool: a link, or an `@path` import line in a marked block |
 
 Common fields: `section`, `desc`, `group` (an optional group from `[groups]`), `when` (`cmd`, `app`, `dir`, `file`, `os`, `any`), `needs` (item ids, or `brew:NAME`), `verify` and `after` (commands). Paths take `~`, `${VAR:-default}`, `{{repo}}` and named paths (`@name`, from `[paths.name]`). Commands are argv arrays.
 
 [jgorodetsky/dotfiles](https://github.com/jgorodetsky/dotfiles/blob/main/dott.toml) is a full example.
+
+### Script items: parts and actions
+
+A script's `check` prints what it found on its first line and the next step on its second. Each line after those is a part: `name<TAB>state<TAB>what it is`, with the state `ok`, `off` or `absent`. Each part gets a row in the item's view and a view of its own: `dott <item> <part>` opens it. Exit 5 means off: nothing needs you, and `fix everything` skips it.
+
+`[[item.action]]` adds rows of the script's own:
+
+```toml
+[[item.action]]
+name = "turn on {{part}}"
+part = true          # a row in each part's view; {{part}} is the part's name
+states = ["off"]     # only for parts in these states
+tier = "change"      # look: runs at once; change: Run it?; danger: a typed yes; ask: runs in the terminal
+run = ["bash", "{{repo}}/rules.sh", "on", "{{part}}"]
+plan = ["bash", "{{repo}}/rules.sh", "plan-on", "{{part}}"]   # optional: prints the plan, a line per change
+```
+
+dott holds its lock while an action runs, and checks the item again after it. An `ask` action asks its own questions. ctrl-c stops it and comes back to dott, and an exit of 130 says you stopped it. Scripts get `DOTT`, the path of the dott that runs them, so a script can ask with dott's own picker:
+
+```sh
+rule="$(printf '%s\n' pr issue jira | "$DOTT" --pick --prompt "which rule")" || exit 130
+name="$("$DOTT" --pick --input --prompt "its name" --preview 'echo saved as {q}')" || exit 130
+```
+
+`--pick` prints the picked line. With `--multi`, tab picks more than one. `--input` is a text box instead: it prints what you typed, and its `--preview` command gets the text as `{q}`, quoted by fzf, so don't put quotes around it. Esc exits 1 and ctrl-c 130.
 
 ## This Mac's settings
 

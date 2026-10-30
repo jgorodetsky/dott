@@ -22,14 +22,21 @@ type Request struct {
 	History string // file for query history; empty for none
 	Ghost   string // grey text in an empty query
 	Height  int    // rows the picker takes; 0 for 32
+
+	// dott --pick, for scripts: the lines as they are, with no columns, legend or history
+	Plain   bool
+	Multi   bool   // tab picks more than one line
+	Input   bool   // no lines: a text box, whose text comes back as the query
+	Preview string // a shell command whose output shows below; {} is the line, {q} the text
 }
 
 // Result is what came back from a picker screen.
 type Result struct {
-	Line  string // the picked line, empty when nothing was picked
-	Query string // what was typed, so a screen can come back with it
-	Back  bool   // esc: go back one screen
-	Code  int    // 0 picked or back, 1 no match, 130 the user quit (ctrl-c)
+	Line  string   // the picked line, empty when nothing was picked
+	Lines []string // every picked line, for Multi
+	Query string   // what was typed, so a screen can come back with it
+	Back  bool     // esc: go back one screen
+	Code  int      // 0 picked or back, 1 no match, 130 the user quit (ctrl-c)
 }
 
 // result reads what fzf printed: the query, the key (esc or empty for enter), the line.
@@ -42,7 +49,7 @@ func result(got []string, code int) Result {
 		r.Back = got[1] == "esc"
 	}
 	if len(got) > 2 {
-		r.Line = got[2]
+		r.Line, r.Lines = got[2], got[2:]
 	}
 	return r
 }
@@ -78,6 +85,9 @@ func match() []string {
 }
 
 func args(req Request) []string {
+	if req.Plain {
+		return plainArgs(req)
+	}
 	prompt, header := req.Prompt, req.Header
 	if prompt == "" {
 		prompt = "dott › "
@@ -106,6 +116,37 @@ func args(req Request) []string {
 	}
 	if req.History != "" {
 		a = append(a, "--history="+req.History)
+	}
+	return a
+}
+
+// plainArgs are for dott --pick: a short list sized to fit, or a text box. Enter on no match
+// does nothing; in a text box it gives back the text.
+func plainArgs(req Request) []string {
+	prompt := req.Prompt
+	if prompt == "" {
+		prompt = "dott pick › "
+	}
+	a := []string{"--exact", "--height=~20", "--reverse", "--info=inline-right",
+		"--query=" + req.Query, "--print-query", "--expect=esc", "--prompt=" + prompt,
+		"--color=hl:yellow:bold:underline,hl+:yellow:bold:underline", "--with-shell=/bin/sh -c"}
+	if req.Header != "" {
+		a = append(a, "--header="+req.Header)
+	}
+	if req.Multi {
+		a = append(a, "--multi")
+	}
+	if req.Input {
+		a = append(a, "--disabled", "--info=hidden", "--no-separator", "--bind=enter:accept-or-print-query")
+	} else {
+		a = append(a, "--bind=enter:accept-non-empty")
+	}
+	if req.Preview != "" {
+		win := "--preview-window=down,3,border-top,wrap"
+		if req.Input {
+			win += ",noinfo" // no scroll count under a text box
+		}
+		a = append(a, "--preview="+req.Preview, win)
 	}
 	return a
 }

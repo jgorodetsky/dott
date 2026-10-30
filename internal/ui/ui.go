@@ -31,9 +31,9 @@ func OpenTTY() (*Term, func(), error) {
 	return &Term{In: bufio.NewReader(f), Out: &screen{w: f, cols: cols}, Cols: cols, Rows: rows, tty: int(f.Fd())}, func() { f.Close() }, nil
 }
 
-// fresh drops keys typed before a question showed, so an early y or enter (typed ahead
-// while dott was busy) can't answer it.
-func (t *Term) fresh() {
+// Fresh drops keys typed before a question or a picker showed, so an early y or enter
+// (typed ahead while dott was busy) can't answer it.
+func (t *Term) Fresh() {
 	if t.tty == 0 {
 		return
 	}
@@ -124,7 +124,7 @@ func (t *Term) Plan(title string, plan []string) {
 
 // Confirm asks Run it? [Y/n/copy]. Enter means yes. Anything it doesn't know means no.
 func (t *Term) Confirm() Answer {
-	t.fresh()
+	t.Fresh()
 	fmt.Fprint(t.Out, "Run it? [Y/n/copy] ")
 	s, err := t.line()
 	switch {
@@ -140,7 +140,7 @@ func (t *Term) Confirm() Answer {
 
 // TypeYes runs a dangerous change only after the word yes. Anything else cancels.
 func (t *Term) TypeYes() bool {
-	t.fresh()
+	t.Fresh()
 	fmt.Fprint(t.Out, "\033[31m▲\033[0m type yes to run it, anything else cancels: ")
 	s, err := t.line()
 	return err == nil && s == "yes"
@@ -161,7 +161,7 @@ func CopyText(s string) error {
 // Ask reads one line of text. ok is false when the input ended (ctrl-d) or was empty
 // and there is no default.
 func (t *Term) Ask(prompt, def string) (string, bool) {
-	t.fresh()
+	t.Fresh()
 	if def != "" {
 		fmt.Fprintf(t.Out, "%s \033[2m[%s]\033[0m: ", prompt, def)
 	} else {
@@ -181,7 +181,7 @@ func (t *Term) Ask(prompt, def string) (string, bool) {
 
 // YesNo asks a question; enter gives def.
 func (t *Term) YesNo(q string, def bool) bool {
-	t.fresh()
+	t.Fresh()
 	hint := "[y/N]"
 	if def {
 		hint = "[Y/n]"
@@ -200,7 +200,7 @@ func (t *Term) YesNo(q string, def bool) bool {
 // Choose asks for one of the options by number; enter picks the first. ok is false
 // when the user typed nothing usable or q.
 func (t *Term) Choose(q string, options []string) (int, bool) {
-	t.fresh()
+	t.Fresh()
 	fmt.Fprintf(t.Out, "\033[1m%s\033[0m\n", q)
 	for i, o := range options {
 		fmt.Fprintf(t.Out, "  %d  %s\n", i+1, o)

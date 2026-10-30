@@ -229,7 +229,8 @@ func (a *App) fixAllPlan() (*Plan, error) {
 }
 
 func hasDrift(s engine.Status) bool {
-	if s.State == engine.Drift && len(s.Parts) == 0 {
+	// a script's own state is apart from its parts': a stale build drifts with every part ok
+	if s.State == engine.Drift && (len(s.Parts) == 0 || s.Kind == "script") {
 		return true
 	}
 	for _, p := range s.Parts {
