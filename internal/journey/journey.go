@@ -11,12 +11,14 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
 
 	"github.com/creack/pty"
 	"github.com/hinshun/vt10x"
+	"golang.org/x/sys/unix"
 )
 
 // Screen is one program running in a pseudo-terminal.
@@ -29,6 +31,9 @@ type Screen struct {
 	last      time.Time // when the program last wrote
 	done      chan struct{}
 	code      int
+	stop      atomic.Bool   // the reader stops, so the terminal can close
+	read      chan struct{} // closed when the reader has stopped
+	closeOnce sync.Once
 }
 
 var ansiSeq = regexp.MustCompile(`\x1b(\[[0-9;?<=>]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[()][A-Z0-9]|[=>78])`)
@@ -55,11 +60,23 @@ func Start(env []string, cols, rows int, name string, args ...string) (*Screen, 
 		return nil, err
 	}
 	s := &Screen{ptmx: ptmx, tty: tty, cmd: cmd, vt: vt10x.New(vt10x.WithSize(cols, rows), vt10x.WithWriter(ptmx)),
-		last: time.Now(), done: make(chan struct{})}
+		last: time.Now(), done: make(chan struct{}), read: make(chan struct{})}
 	go func() {
+		defer close(s.read)
 		b := make([]byte, 4096)
 		var held []byte // the start of a character that the last read cut in two
-		for {
+		fd := int(ptmx.Fd())
+		for !s.stop.Load() {
+			// wait for output with a timeout: a read that blocks would hold the terminal open
+			// after Hangup closes it, so the program would never see the hangup
+			var rfds unix.FdSet
+			rfds.Set(fd)
+			tv := unix.Timeval{Usec: 50_000}
+			if n, err := unix.Select(fd+1, &rfds, nil, nil, &tv); err != nil && err != unix.EINTR {
+				return
+			} else if n <= 0 {
+				continue
+			}
 			n, err := ptmx.Read(b)
 			if n > 0 {
 				s.mu.Lock()
@@ -83,13 +100,26 @@ func Start(env []string, cols, rows int, name string, args ...string) (*Screen, 
 	return s, nil
 }
 
-// Close stops the program and frees the terminal.
+// Close stops the program, and anything it started, and frees the terminal. Start made the
+// program lead its own process group, so the group goes, not only the program.
 func (s *Screen) Close() {
 	if s.cmd.Process != nil {
+		syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
 		s.cmd.Process.Kill()
 	}
-	s.ptmx.Close()
-	s.tty.Close()
+	s.closeTerminal()
+}
+
+// Hangup closes the terminal and leaves the program running, the way closing a tab does.
+func (s *Screen) Hangup() { s.closeTerminal() }
+
+func (s *Screen) closeTerminal() {
+	s.closeOnce.Do(func() {
+		s.stop.Store(true)
+		<-s.read
+		s.ptmx.Close()
+		s.tty.Close()
+	})
 }
 
 // Text is everything the program wrote so far, without escape codes.
